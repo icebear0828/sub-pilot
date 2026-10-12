@@ -285,6 +285,8 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                                 let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
                                                 let latency = start.elapsed().as_millis();
 
+                                                println!("🎙️ [ASR] 原始={raw_text:?} -> 解析语种={lang:?}, 识别={clean_text:?} -> 翻译={translated:?}");
+
                                                 let payload = SubtitlePayload {
                                                     text: clean_text,
                                                     translated,
@@ -419,20 +421,27 @@ fn parse_sense_voice_text(text: &str, target_lang: Option<&str>) -> (String, Str
     let mut detected_tag: Option<String> = None;
     let mut clean_text = String::new();
 
-    // 1. 尝试从 SenseVoice 内置标签提取: <|zh|>, <|en|>, <|ja|>, <|ko|>, <|yue|>
-    let parts: Vec<&str> = text.split('>').collect();
-    for part in parts {
-        if let Some(tag_content) = part.split("<|").nth(1) {
-            match tag_content {
+    // 1. 精确解析 SenseVoice 的特殊标记: <|zh|><|NEUTRAL|><|Speech|><|woitn|> text
+    let mut cur = text;
+    while let Some(start) = cur.find("<|") {
+        clean_text.push_str(&cur[..start]);
+        let rem = &cur[start + 2..];
+        if let Some(end) = rem.find("|>") {
+            let tag = &rem[..end];
+            match tag {
                 "zh" | "en" | "ja" | "ko" | "yue" => {
-                    detected_tag = Some(tag_content.to_string());
+                    detected_tag = Some(tag.to_string());
                 }
                 _ => {}
             }
+            cur = &rem[end + 2..];
         } else {
-            clean_text.push_str(part.trim());
+            clean_text.push_str("<|");
+            cur = rem;
         }
     }
+    clean_text.push_str(cur);
+    let mut clean_text = clean_text.trim().to_string();
 
     if clean_text.is_empty() {
         clean_text = text.to_string();
