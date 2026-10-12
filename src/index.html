@@ -224,16 +224,24 @@
     }
 
     function renderSubtitle(payload) {
-      const card = document.createElement('div');
-      card.className = 'subtitle-card';
-      
       const currentFontSize = fontSizes[currentFontSizeIndex];
       const lang = (payload.language || payload.lang || 'AUTO').toUpperCase();
       const rawText = payload.text || payload.original || '';
       const translatedText = payload.translated || '';
+      const isChinese = lang === 'ZH' || lang === 'YUE';
 
-      // 如果是中文或没有翻译（本身就是母语），只显示单行大字幕，避免双语重复
-      const isChinese = lang === 'ZH' || lang === 'YUE' || !translatedText;
+      // 检查当前屏幕上是否已有这句字幕卡片（阶段 1 刚上屏）
+      let card = document.getElementById(`sub-card-${payload.id}`);
+
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'subtitle-card';
+        card.id = `sub-card-${payload.id}`;
+
+        // 保持只显示最新的字幕
+        subContainer.innerHTML = '';
+        subContainer.appendChild(card);
+      }
 
       if (isChinese) {
         card.innerHTML = `
@@ -246,24 +254,27 @@
           </div>
         `;
       } else {
-        // 外语（如日漫、美剧、韩语）：上方原音小字，下方地道中文大字
+        // 外语（日/英/韩）：两段式流式显示
+        // 阶段 1 (asr): 原文瞬间呈现，翻译显示轻量 loading 点缀
+        // 阶段 2 (trans): 翻译大模型完成，无缝替换为地道中文！
+        const transContent = translatedText 
+          ? escapeHtml(translatedText) 
+          : `<span style="opacity: 0.45; font-size: 0.85em; font-weight: 400;">正在智能意译...</span>`;
+
         card.innerHTML = `
           <div class="original-line">
             <span class="lang-tag">${escapeHtml(lang)}</span>
             <span>${escapeHtml(rawText)}</span>
           </div>
           <div class="translated-line" style="font-size: ${currentFontSize}">
-            ${escapeHtml(translatedText)}
+            ${transContent}
           </div>
           <div class="meta-line">
-            <span>⚡ 推理: ${payload.latency_ms} ms</span>
+            <span>${payload.stage === 'trans' ? '🎬 意译完成' : '⚡ 实时跟读'}</span>
+            <span>延迟: ${payload.latency_ms} ms</span>
           </div>
         `;
       }
-
-      // 保持只显示最新的字幕
-      subContainer.innerHTML = '';
-      subContainer.appendChild(card);
     }
 
     function escapeHtml(text) {

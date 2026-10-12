@@ -64,6 +64,8 @@ pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SubtitlePayload {
+    pub id: u64,
+    pub stage: String, // "asr" (毫秒级初出原文) 或 "trans" (补全翻译)
     pub text: String,
     pub translated: String,
     pub language: String,
@@ -248,6 +250,8 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
         p.vad_path.as_ref().and_then(|vad_p| create_vad_detector(vad_p))
     });
 
+    let mut subtitle_seq: u64 = 0;
+
     let mut recv_task = tokio::spawn(async move {
         let mut audio_buffer: Vec<f32> = Vec::with_capacity(16000 * 4);
 
@@ -282,18 +286,46 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                             if !raw_text.is_empty() {
                                                 // 【阶段 1 & 3：结合锁定语种与字符集二次校验纠偏】
                                                 let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
-                                                let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
-                                                let latency = start.elapsed().as_millis();
+                                                let asr_latency = start.elapsed().as_millis();
+                                                subtitle_seq += 1;
+                                                let msg_id = subtitle_seq;
 
-                                                println!("🎙️ [ASR] 原始={raw_text:?} -> 解析语种={lang:?}, 识别={clean_text:?} -> 翻译={translated:?}");
+                                                println!("⚡ [ASR-Live] id={msg_id} 原始={raw_text:?} -> 解析语种={lang:?}, 识别={clean_text:?} (耗时={asr_latency}ms)");
 
-                                                let payload = SubtitlePayload {
-                                                    text: clean_text,
-                                                    translated,
-                                                    language: lang,
-                                                    latency_ms: latency,
+                                                // 阶段 1：毫秒级原音直出上屏（感知延迟趋零！）
+                                                let live_payload = SubtitlePayload {
+                                                    id: msg_id,
+                                                    stage: "asr".to_string(),
+                                                    text: clean_text.clone(),
+                                                    translated: String::new(),
+                                                    language: lang.clone(),
+                                                    latency_ms: asr_latency,
                                                 };
-                                                let _ = tx.send(payload);
+                                                let _ = tx.send(live_payload);
+
+                                                // 阶段 2：异步并发调用翻译，完全不阻塞音频网络接收循环！
+                                                let tx_async = tx.clone();
+                                                let client_async = http_client.clone();
+                                                let text_for_trans = clean_text.clone();
+                                                let lang_for_trans = lang.clone();
+
+                                                tokio::spawn(async move {
+                                                    let trans_start = std::time::Instant::now();
+                                                    let translated = translate_to_chinese(&client_async, &text_for_trans, &lang_for_trans).await;
+                                                    let total_latency = asr_latency + trans_start.elapsed().as_millis();
+
+                                                    println!("🎬 [Trans-Complete] id={msg_id} 翻译={translated:?} (总耗时={total_latency}ms)");
+
+                                                    let full_payload = SubtitlePayload {
+                                                        id: msg_id,
+                                                        stage: "trans".to_string(),
+                                                        text: text_for_trans,
+                                                        translated,
+                                                        language: lang_for_trans,
+                                                        latency_ms: total_latency,
+                                                    };
+                                                    let _ = tx_async.send(full_payload);
+                                                });
                                             }
                                         }
                                     }
@@ -315,16 +347,37 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                     let raw_text = result.text.trim();
                                     if !raw_text.is_empty() {
                                         let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
-                                        let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
-                                        let latency = start.elapsed().as_millis();
+                                        let asr_latency = start.elapsed().as_millis();
+                                        subtitle_seq += 1;
+                                        let msg_id = subtitle_seq;
 
-                                        let payload = SubtitlePayload {
-                                            text: clean_text,
-                                            translated,
-                                            language: lang,
-                                            latency_ms: latency,
+                                        let live_payload = SubtitlePayload {
+                                            id: msg_id,
+                                            stage: "asr".to_string(),
+                                            text: clean_text.clone(),
+                                            translated: String::new(),
+                                            language: lang.clone(),
+                                            latency_ms: asr_latency,
                                         };
-                                        let _ = tx.send(payload);
+                                        let _ = tx.send(live_payload);
+
+                                        let tx_async = tx.clone();
+                                        let client_async = http_client.clone();
+                                        let text_for_trans = clean_text.clone();
+                                        let lang_for_trans = lang.clone();
+
+                                        tokio::spawn(async move {
+                                            let translated = translate_to_chinese(&client_async, &text_for_trans, &lang_for_trans).await;
+                                            let full_payload = SubtitlePayload {
+                                                id: msg_id,
+                                                stage: "trans".to_string(),
+                                                text: text_for_trans,
+                                                translated,
+                                                language: lang_for_trans,
+                                                latency_ms: asr_latency,
+                                            };
+                                            let _ = tx_async.send(full_payload);
+                                        });
                                     }
                                 }
                             }
