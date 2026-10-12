@@ -48,10 +48,10 @@ pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
     let silero_vad = SileroVadModelConfig {
         model: Some(vad_path.to_string()),
         threshold: 0.5,
-        min_silence_duration: 0.35, // 0.35 秒静音视为自然断句
-        min_speech_duration: 0.25,  // 忽略 0.25 秒以下的杂音
+        min_silence_duration: 0.25, // 0.25 秒静音视为自然句尾停顿
+        min_speech_duration: 0.20,  // 忽略 0.20 秒以下的杂音
         window_size: 512,
-        max_speech_duration: 6.0,   // 单句最长 6 秒切片
+        max_speech_duration: 3.5,   // 单句最长 3.5 秒强制切片（避免超长等待）
     };
 
     let mut config = VadModelConfig::default();
@@ -65,7 +65,8 @@ pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SubtitlePayload {
     pub id: u64,
-    pub stage: String, // "asr" (毫秒级初出原文) 或 "trans" (补全翻译)
+    pub is_final: bool, // false: 中间增量打字机识别结果; true: 句子终态定稿
+    pub stage: String,  // "partial" (实时打字机增量) | "asr" (句末原音定稿) | "trans" (最终意译完成)
     pub text: String,
     pub translated: String,
     pub language: String,
@@ -254,6 +255,8 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
 
     let mut recv_task = tokio::spawn(async move {
         let mut audio_buffer: Vec<f32> = Vec::with_capacity(16000 * 4);
+        let mut live_speech_buffer: Vec<f32> = Vec::with_capacity(16000 * 6);
+        let mut last_partial_time = std::time::Instant::now();
 
         while let Some(Ok(msg)) = receiver.next().await {
             match msg {
@@ -266,15 +269,52 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                         chunk.push(sample_i16 as f32 / 32768.0);
                     }
 
-                    // 【阶段 2：VAD 自然语音分块】
+                    // 【阶段 2：流式语音检测与打字机输出】
                     if let Some(ref mut vad) = vad_detector {
                         vad.accept_waveform(&chunk);
 
+                        // 2.1 说话中：打字机流式增量识别 (is_final: false)
+                        if vad.detected() {
+                            live_speech_buffer.extend_from_slice(&chunk);
+
+                            // 每隔约 250ms 且累计至少 0.3s (4800采样点) 进行一次打字机快速推断
+                            if last_partial_time.elapsed() >= std::time::Duration::from_millis(250)
+                                && live_speech_buffer.len() >= 4800
+                            {
+                                last_partial_time = std::time::Instant::now();
+                                if let Some(ref rec) = current_recognizer {
+                                    let stream = rec.create_stream();
+                                    stream.accept_waveform(16000, &live_speech_buffer);
+                                    rec.decode(&stream);
+
+                                    if let Some(result) = stream.get_result() {
+                                        let raw_text = result.text.trim();
+                                        if !raw_text.is_empty() {
+                                            let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
+                                            if !clean_text.is_empty() {
+                                                let payload = SubtitlePayload {
+                                                    id: subtitle_seq + 1, // 当前正在说的句号预留位
+                                                    is_final: false,
+                                                    stage: "partial".to_string(),
+                                                    text: clean_text,
+                                                    translated: String::new(),
+                                                    language: lang,
+                                                    latency_ms: 0,
+                                                };
+                                                let _ = tx.send(payload);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2.2 句末停顿触发：VAD 产生完整语音句 (is_final: true)
                         while !vad.is_empty() {
                             if let Some(segment) = vad.front() {
                                 let samples = segment.samples();
-                                // 只处理大于 0.4 秒的有效语音段，过滤短促杂音
-                                if samples.len() >= 6400 {
+                                // 只处理大于 0.35 秒的有效语音段，过滤短促杂音
+                                if samples.len() >= 5600 {
                                     if let Some(ref rec) = current_recognizer {
                                         let start = std::time::Instant::now();
                                         let stream = rec.create_stream();
@@ -284,17 +324,17 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                         if let Some(result) = stream.get_result() {
                                             let raw_text = result.text.trim();
                                             if !raw_text.is_empty() {
-                                                // 【阶段 1 & 3：结合锁定语种与字符集二次校验纠偏】
                                                 let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
                                                 let asr_latency = start.elapsed().as_millis();
                                                 subtitle_seq += 1;
                                                 let msg_id = subtitle_seq;
 
-                                                println!("⚡ [ASR-Live] id={msg_id} 原始={raw_text:?} -> 解析语种={lang:?}, 识别={clean_text:?} (耗时={asr_latency}ms)");
+                                                println!("⚡ [ASR-Final] id={msg_id} 原始={raw_text:?} -> 解析语种={lang:?}, 识别={clean_text:?} (耗时={asr_latency}ms)");
 
-                                                // 阶段 1：毫秒级原音直出上屏（感知延迟趋零！）
+                                                // 阶段 1：定稿原音直出上屏 (is_final: true)
                                                 let live_payload = SubtitlePayload {
                                                     id: msg_id,
+                                                    is_final: true,
                                                     stage: "asr".to_string(),
                                                     text: clean_text.clone(),
                                                     translated: String::new(),
@@ -303,7 +343,7 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                                 };
                                                 let _ = tx.send(live_payload);
 
-                                                // 阶段 2：异步并发调用翻译，完全不阻塞音频网络接收循环！
+                                                // 阶段 2：异步并发调用翻译
                                                 let tx_async = tx.clone();
                                                 let client_async = http_client.clone();
                                                 let text_for_trans = clean_text.clone();
@@ -318,6 +358,7 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
 
                                                     let full_payload = SubtitlePayload {
                                                         id: msg_id,
+                                                        is_final: true,
                                                         stage: "trans".to_string(),
                                                         text: text_for_trans,
                                                         translated,
@@ -332,9 +373,11 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                 }
                             }
                             vad.pop();
+                            // 句子定稿完成，清空实时流式打字机音频缓存
+                            live_speech_buffer.clear();
                         }
                     } else {
-                        // 若未安装 VAD 模型，使用高抗噪动态平滑分块（1.2 秒最小聚合，彻底消除 0.5s 短断句误判）
+                        // 若未安装 VAD 模型，使用动态平滑分块（1.2 秒最小聚合）
                         audio_buffer.extend_from_slice(&chunk);
                         if audio_buffer.len() >= 19200 { // 1.2 秒
                             if let Some(ref rec) = current_recognizer {
@@ -353,6 +396,7 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
 
                                         let live_payload = SubtitlePayload {
                                             id: msg_id,
+                                            is_final: true,
                                             stage: "asr".to_string(),
                                             text: clean_text.clone(),
                                             translated: String::new(),
@@ -370,6 +414,7 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                             let translated = translate_to_chinese(&client_async, &text_for_trans, &lang_for_trans).await;
                                             let full_payload = SubtitlePayload {
                                                 id: msg_id,
+                                                is_final: true,
                                                 stage: "trans".to_string(),
                                                 text: text_for_trans,
                                                 translated,

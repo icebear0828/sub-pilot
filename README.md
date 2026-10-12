@@ -83,20 +83,78 @@ cargo run --release
 
 ## 🔌 API 接口规范与客户端对接
 
-### 1. 流式 WebSocket API (推荐用于实时生肉字幕)
-- **端点**：`ws://<服务端IP>:8765/v1/audio/stream`
-- **上行推流格式**：纯二进制 PCM 裸流（`16000Hz`、`16-bit Signed LE`、单声道 `Mono`），建议每次推送 `0.3s ~ 0.5s`（约 9600 ~ 16000 字节）。
-- **下行响应 (JSON 文本)**：
-  ```json
-  {
-    "text": "うちの中学は弁当制で持っていきない場合は50円の学校販売のパンを買う。",
-    "translated": "[JA] うちの中学は弁当制で持っていきない場合は50円の学校販売のパンを買う。",
-    "language": "ja",
-    "latency_ms": 28
-  }
-  ```
+### 1. 流式 WebSocket API (推荐用于实时生肉字幕与桌面客户端)
+- **端点**：
+  - `ws://<服务端IP>:8765/v1/audio/stream` 或 `ws://<服务端IP>:8765/ws` (HTTP 普通通道)
+  - `wss://<服务端IP>:8766/v1/audio/stream` 或 `wss://<服务端IP>:8766/ws` (TLS 加密通道，麦克风权限安全要求)
+- **上行音频推流**：
+  - **格式**：纯二进制 PCM 裸流（`16000Hz`、`16-bit Signed LE`、单声道 `Mono`）。
+  - **发送节奏**：建议客户端每 `100ms ~ 250ms` 推送一个数据包（约 `3200 ~ 8000` 字节）。
+- **上行控制指令 (JSON 文本)**：
+  - 可随时通过 WebSocket 发送文本指令动态切换或锁定识别语言，避免背景噪音自动识别跑偏：
+    ```json
+    { "action": "set_language", "language": "en" }
+    ```
+    > 支持参数：`"auto"` (多语言自动识别), `"en"` (英语), `"ja"` (日语), `"zh"` (中文), `"ko"` (韩语), `"yue"` (粤语)。
 
-#### Python 客户端示例：
+#### 下行数据生命周期与协议设计 (打字机流式模型)
+为了彻底解决“整句说完才出字导致体感等待2~3秒”的痛点，Sub-Pilot 采用**双轨流式状态机**：
+1. **打字机中间增量 (`is_final: false`, `stage: "partial"`)**：
+   - 用户说话期间，服务端每 ~250ms 计算一次中间识别结果并立即下发。
+   - 客户端此时应该**覆盖更新**当前未定稿的预览文本，获得实时“打字机逐字输出”视觉体验，感知延迟降低到 **200ms**。
+2. **原音定稿 (`is_final: true`, `stage: "asr"`)**：
+   - 说话停顿（VAD 判定断句），生成该句最终的完整高精度 ASR 识别文本。
+3. **翻译补全 (`is_final: true`, `stage: "trans"`)**：
+   - 异步翻译完成后下发，带有对应的译文（`translated`），此时客户端将其替换为最终双语字幕。
+
+#### 下行消息 JSON 结构 (SubtitlePayload)：
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `id` | `number` (u64) | 句子唯一序列号。同一句子的 `partial`、`asr` 和 `trans` 具有相同或对应的行标识。 |
+| `is_final` | `boolean` | **核心状态位**：`false` 表示正在说话的临时打字机增量；`true` 表示句子已定稿。 |
+| `stage` | `string` | 当前生命周期阶段：`"partial"` (实时打字机) / `"asr"` (原文定稿) / `"trans"` (翻译完成)。 |
+| `text` | `string` | ASR 原文识别结果。 |
+| `translated` | `string` | 中文翻译文本（在 `stage: "trans"` 时填充）。 |
+| `language` | `string` | 识别出的语种代码（如 `en`、`ja`、`zh`、`ko`）。 |
+| `latency_ms` | `number` | 推理与翻译耗时统计（毫秒）。 |
+
+#### 下行报文示例：
+```json
+// 1. 正在说话中（实时打字机流式增量，持续刷新当前行）
+{
+  "id": 1,
+  "is_final": false,
+  "stage": "partial",
+  "text": "Welcome to New York",
+  "translated": "",
+  "language": "en",
+  "latency_ms": 0
+}
+
+// 2. 说话停顿定稿（VAD 切片终态确定，原音定稿上屏）
+{
+  "id": 1,
+  "is_final": true,
+  "stage": "asr",
+  "text": "Welcome to New York, it's been waiting for you.",
+  "translated": "",
+  "language": "en",
+  "latency_ms": 86
+}
+
+// 3. 异步翻译完成（毫秒级回调意译，与 id=1 绑定补全）
+{
+  "id": 1,
+  "is_final": true,
+  "stage": "trans",
+  "text": "Welcome to New York, it's been waiting for you.",
+  "translated": "欢迎来到纽约，它一直在等待着你。",
+  "language": "en",
+  "latency_ms": 389
+}
+```
+
+#### Python 客户端标准对接示例：
 ```python
 import asyncio
 import websockets
@@ -105,18 +163,39 @@ import json
 async def run_client():
     uri = "ws://127.0.0.1:8765/v1/audio/stream"
     async with websockets.connect(uri) as ws:
+        # 可选：锁定识别英语
+        await ws.send(json.dumps({"action": "set_language", "language": "en"}))
+
+        # 下行监听任务
         async def receive_subtitles():
             async for message in ws:
                 data = json.loads(message)
-                print(f"[{data['language'].upper()}] {data['text']} (推理耗时: {data['latency_ms']}ms)")
+                msg_id = data["id"]
+                is_final = data["is_final"]
+                stage = data["stage"]
+                text = data["text"]
+                translated = data["translated"]
+
+                if not is_final:
+                    # 打字机实时刷新（光标不换行）
+                    print(f"\r⚡ [正在输入 #{msg_id}] {text} ...", end="", flush=True)
+                else:
+                    if stage == "asr":
+                        print(f"\n✅ [定稿原文 #{msg_id}] {text}")
+                    elif stage == "trans":
+                        print(f"🎬 [翻译完成 #{msg_id}] {translated} (总耗时: {data['latency_ms']}ms)")
 
         asyncio.create_task(receive_subtitles())
 
-        # 模拟读取 16kHz PCM 音频推流
+        # 上行推流：读取 16kHz 16-bit Mono PCM 文件推流
         with open("test.pcm", "rb") as f:
-            while chunk := f.read(9600):
+            chunk_size = 4800  # 约 150ms 音频块
+            while chunk := f.read(chunk_size):
                 await ws.send(chunk)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.15)
+
+        # 等待最后几句识别与翻译返回
+        await asyncio.sleep(2.0)
 
 asyncio.run(run_client())
 ```
@@ -124,9 +203,9 @@ asyncio.run(run_client())
 ---
 
 ### 2. OpenAI 兼容 REST API
-可直接配置给任何支持自定义 OpenAI Whisper 端点的第三方客户端或插件：
+可直接配置给任何支持自定义 OpenAI Whisper 端点的第三方客户端或插件（如 Pot-Desktop, Bob, 播放器插件等）：
 - **端点**：`POST http://<服务端IP>:8765/v1/audio/transcriptions`
-- **请求格式**：`multipart/form-data`（包含 `file=@audio.wav`）
+- **请求格式**：`multipart/form-data`（包含 `file=@audio.wav` 或 `.pcm`）
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/audio/transcriptions \
