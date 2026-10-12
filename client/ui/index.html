@@ -185,6 +185,15 @@
       overflow: hidden;
       text-overflow: ellipsis;
       flex: 1;
+      font-family: inherit;
+    }
+
+    .typing-cursor {
+      display: inline-block;
+      color: var(--accent-color);
+      animation: blink 0.8s infinite;
+      font-weight: 300;
+      margin-left: 2px;
     }
 
     .sub-translation {
@@ -196,15 +205,16 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      transition: font-size 0.2s;
+      transition: font-size 0.2s, opacity 0.2s;
     }
 
-    .cursor-blink {
-      display: inline-block;
-      animation: blink 0.9s infinite;
-      color: var(--accent-color);
-      font-weight: 300;
-      margin-left: 2px;
+    .sub-translation.fade-update {
+      animation: fadeInText 0.25s ease-out;
+    }
+
+    @keyframes fadeInText {
+      from { opacity: 0.4; transform: translateY(2px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     @keyframes blink {
@@ -517,26 +527,41 @@
             translateToggle.value = String(snap.translationEnabled);
           }
 
-          // 字幕渲染 (定稿稳定呈现，绝不横跳)
+          // 字幕渲染 (LCP 算法平滑向前打字，译文稳定单向切换)
           if (snap.subtitle && snap.subtitle.text) {
             const sub = snap.subtitle;
             const lang = (sub.language || snap.language || 'AUTO').toUpperCase();
             langBadge.innerText = lang;
 
-            // 原文行直接显示定稿原文，绝不带闪烁半成品
-            originalText.innerText = sub.text;
+            const isPartial = sub.isFinal === false || sub.stage === 'partial';
 
-            // 译文行：有翻译显示翻译，没翻译显示原文，绝不跳“正在输入”等干扰词
-            if (sub.translated) {
-              translatedText.innerText = sub.translated;
-            } else if (sub.text) {
-              translatedText.innerText = sub.text;
+            // 原文行：流式打字追加闪烁光标，定稿整句展示，绝不回弹抖动
+            if (isPartial) {
+              originalText.innerHTML = escapeHtml(sub.text) + '<span class="typing-cursor">▎</span>';
+            } else {
+              originalText.innerText = sub.text;
+            }
+
+            // 译文行：有翻译显示翻译，没翻译保持上一句译文或显示原文；译文更新时带轻微平滑过渡
+            const newTrans = sub.translated || sub.text;
+            if (newTrans && translatedText.innerText !== newTrans) {
+              translatedText.innerText = newTrans;
+              translatedText.classList.remove('fade-update');
+              void translatedText.offsetWidth; // 触发 reflow 重置动画
+              translatedText.classList.add('fade-update');
             }
           }
         }
       } catch (e) {
         console.error('syncSnapshot error:', e);
       }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, m => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      }[m]));
     }
 
     if (hasTauri) {

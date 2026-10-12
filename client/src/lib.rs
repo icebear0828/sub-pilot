@@ -99,6 +99,28 @@ pub struct SharedState {
     /// ASR 识别的目标语种（如 "en", "ja", "zh", "auto" 等）
     language: Mutex<String>,
     language_tx: watch::Sender<String>,
+    /// 当前正在说话的句子的已锁定不可变前缀（LCP Prefix）
+    locked_prefix: Mutex<String>,
+    /// 当前正在说的最后推断结果
+    last_partial_raw: Mutex<String>,
+}
+
+/// 计算两个字符串的公共最长前缀（按 Unicode 字符边界）
+fn longest_common_prefix(a: &str, b: &str) -> String {
+    let mut prefix = String::new();
+    let mut b_chars = b.chars();
+    for ca in a.chars() {
+        if let Some(cb) = b_chars.next() {
+            if ca == cb {
+                prefix.push(ca);
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    prefix
 }
 
 impl SharedState {
@@ -119,6 +141,8 @@ impl SharedState {
             translation_enabled: AtomicBool::new(true),
             language: Mutex::new("en".into()),
             language_tx,
+            locked_prefix: Mutex::new(String::new()),
+            last_partial_raw: Mutex::new(String::new()),
         }
     }
 
@@ -128,11 +152,74 @@ impl SharedState {
         }
     }
 
-    /// 第一阶段：收到 ASR 文本后 0ms 即刻更新原文，同时保留当前的翻译内容（绝不跳成“翻译中…”，平滑过渡），并返回新版本号
-    fn update_source_text(&self, mut new_sub: Subtitle) -> u64 {
+    /// 核心算法：LCP (最长公共前缀) 平滑向前生长
+    /// 当收到流式增量 partial 时：
+    /// 1. 若当前 partial 与上一次推测有公共前缀，且公共前缀增长，则把公共前缀固化进 locked_prefix（永久锁定不变）；
+    /// 2. 只有超过 locked_prefix 的后缀才作为打字尾巴追加；
+    /// 3. 如果当前推测长度甚至小于当前已锁定的前缀，保留已锁定的前缀不后退，绝不发生删字抖动！
+    fn update_partial_lcp(&self, raw_incoming: &str, lang: &str) {
+        let incoming = raw_incoming.trim();
+        if incoming.is_empty() {
+            return;
+        }
+
+        let mut locked_guard = match self.locked_prefix.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let mut last_raw_guard = match self.last_partial_raw.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        // 如果上次有推测，计算这次与上次的 LCP
+        if !last_raw_guard.is_empty() {
+            let common = longest_common_prefix(&last_raw_guard, incoming);
+            // 如果公共前缀比当前已锁定的还长，前进锁定线！
+            if common.len() > locked_guard.len() {
+                *locked_guard = common;
+            }
+        }
+        *last_raw_guard = incoming.to_string();
+
+        // 构造前向单调递增的平滑显示文本：
+        // 保证展示内容必须以 locked_prefix 开头，只拼接新增的尾巴
+        let smooth_text = if incoming.starts_with(locked_guard.as_str()) {
+            incoming.to_string()
+        } else {
+            // 如果模型出现局部抖动，强制保留已锁定的前缀，并在尾部追加新词
+            let mut combined = locked_guard.clone();
+            // 找到 incoming 中未被包含的新鲜部分
+            if incoming.len() > locked_guard.len() {
+                combined.push(' ');
+                combined.push_str(&incoming[locked_guard.len()..]);
+            }
+            combined
+        };
+
+        if let Ok(mut current) = self.subtitle.lock() {
+            current.is_final = false;
+            current.stage = "partial".into();
+            current.text = smooth_text;
+            current.language = lang.to_string();
+            // 关键：partial 打字期间，保留现有的 translated，绝不覆盖成任何“输入中”或空白！
+        }
+    }
+
+    /// 句末停顿触发定稿 (is_final == true)：
+    /// 重置本句的前缀锁，将最终整句作为定稿提交
+    fn commit_final_text(&self, mut new_sub: Subtitle) -> u64 {
+        // 重置当前句的 LCP 缓冲区
+        if let Ok(mut locked) = self.locked_prefix.lock() {
+            locked.clear();
+        }
+        if let Ok(mut last_raw) = self.last_partial_raw.lock() {
+            last_raw.clear();
+        }
+
         let version = self.subtitle_version.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut current) = self.subtitle.lock() {
-            // 如果新接收的结构里没有译文，保留当前正在显示的译文，避免屏幕反复跳动闪烁
+            // 定稿时若译文暂未生成，依然平滑保持上一句的译文，不产生突兀空白
             if new_sub.translated.is_empty() {
                 new_sub.translated = current.translated.clone();
             }
@@ -141,12 +228,13 @@ impl SharedState {
         version
     }
 
-    /// 第二阶段：大模型异步翻译完成后局部填充译文（若版本号匹配，则采纳；若已过时，则丢弃）
+    /// 第二阶段：大模型异步意译完成，平滑注入译文
     fn update_translated_text(&self, version: u64, translated: String) {
         let current_version = self.subtitle_version.load(Ordering::SeqCst);
         if current_version == version {
             if let Ok(mut current) = self.subtitle.lock() {
                 current.translated = translated;
+                current.stage = "trans".into();
             }
         }
     }
@@ -449,46 +537,42 @@ async fn translate_text(client: &reqwest::Client, source: &str) -> String {
 }
 
 /// 解析 ASR 消息：
-/// 1. 若为说话中的打字机增量（is_final == false）：0ms 原地刷新原文草稿，绝不触发大模型翻译，保障极致低延迟打字机体感。
-/// 2. 若为原音定稿（is_final == true && stage == "asr"）：定稿上屏，若服务端未提供译文且用户开启了翻译，在后台调用客户端翻译。
-/// 3. 若服务端已完成意译（stage == "trans"）：直接采纳服务端译文。
-/// 4. 若用户关闭翻译（纯 ASR 模式）：双行统一同步显示纯粹 ASR 文本。
+/// 1. 若为说话中的打字机增量（is_final == false）：
+///    采用 LCP 最长公共前缀锁定算法，锁死已经确定的前缀字，只单向往前生长打字，零回弹、零闪烁！
+/// 2. 若为原音定稿（is_final == true）：
+///    结算当前句子，保留译文平滑过渡，并异步启动翻译。
 fn update_subtitle(state: &Arc<SharedState>, client: &reqwest::Client, text: &str) {
     let Ok(mut subtitle) = serde_json::from_str::<Subtitle>(text) else {
         return;
     };
 
-    let source = subtitle.text.clone();
     let is_translate_enabled = state.translation_enabled.load(Ordering::Relaxed);
 
-    // 纯 ASR 模式：不调用大模型，翻译行直接同步原文
-    if !is_translate_enabled {
-        // 如果是中间草稿 (is_final == false)，直接丢弃，绝不上屏跳动！
-        if !subtitle.is_final {
-            return;
-        }
-        subtitle.translated = source.clone();
-        state.update_source_text(subtitle);
-        return;
-    }
-
-    // 1. 中间打字机草稿 (is_final == false)：
-    // 直接丢弃！绝不让未定稿的内容在屏幕上疯狂跳变，确保视线绝对稳定！
+    // 1. 说话中的流式增量打字 (is_final == false)
     if !subtitle.is_final {
+        state.update_partial_lcp(&subtitle.text, &subtitle.language);
         return;
     }
 
-    // 2. 服务端已经异步翻译完成 (stage == "trans")，直接更新译文
+    // 2. 纯 ASR 模式下的定稿 (用户关闭了翻译)
+    if !is_translate_enabled {
+        let source = subtitle.text.clone();
+        subtitle.translated = source;
+        state.commit_final_text(subtitle);
+        return;
+    }
+
+    // 3. 服务端已完成意译推流 (stage == "trans")
     if subtitle.stage == "trans" && !subtitle.translated.is_empty() {
-        state.update_source_text(subtitle);
+        state.commit_final_text(subtitle);
         return;
     }
 
-    // 3. 句子停顿定稿 (is_final == true && stage == "asr")
-    // 立即刷新定稿原文，保留当前译文平滑过渡
-    let version = state.update_source_text(subtitle);
+    // 4. 句子停顿定稿 (is_final == true && stage == "asr")
+    let source = subtitle.text.clone();
+    let version = state.commit_final_text(subtitle);
 
-    // 在后台异步任务中请求翻译，完全不阻塞当前 WebSocket 接收与录音管道
+    // 异步请求翻译，绝不阻塞录音和 ASR 管道
     let state_clone = state.clone();
     let client_clone = client.clone();
     tauri::async_runtime::spawn(async move {
