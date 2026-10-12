@@ -19,11 +19,11 @@ jobs:
       matrix:
         include:
           - platform: 'windows-latest'
-            args: ''
+            args: '--bundles nsis'
           - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin --bundles dmg,app'
           - platform: 'macos-13'
-            args: '--target x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin --bundles dmg,app'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -35,7 +35,7 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || (matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '') }}
 
-      - name: Install Node.js (for Tauri CLI)
+      - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -52,7 +52,6 @@ jobs:
         with:
           name: client-${{ matrix.platform }}
           path: |
-            client/target/**/bundle/msi/*.msi
             client/target/**/bundle/nsis/*.exe
             client/target/**/bundle/dmg/*.dmg
             client/target/**/bundle/macos/*.app.tar.gz
