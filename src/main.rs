@@ -47,11 +47,11 @@ pub fn create_sense_voice_recognizer(
 pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
     let silero_vad = SileroVadModelConfig {
         model: Some(vad_path.to_string()),
-        threshold: 0.5,
-        min_silence_duration: 0.25, // 0.25 秒静音视为自然句尾停顿
-        min_speech_duration: 0.20,  // 忽略 0.20 秒以下的杂音
+        threshold: 0.6,
+        min_silence_duration: 0.75, // 0.75 秒完整停顿才视为句尾，绝不在换气或短暂停顿时将句子切碎！
+        min_speech_duration: 0.35,  // 0.35 秒以下过滤，彻底消除碎片杂音和残破尾缀
         window_size: 512,
-        max_speech_duration: 3.5,   // 单句最长 3.5 秒强制切片（避免超长等待）
+        max_speech_duration: 10.0,  // 单句最长 10 秒强制切片，保障完整语义
     };
 
     let mut config = VadModelConfig::default();
@@ -313,8 +313,8 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                         while !vad.is_empty() {
                             if let Some(segment) = vad.front() {
                                 let samples = segment.samples();
-                                // 只处理大于 0.35 秒的有效语音段，过滤短促杂音
-                                if samples.len() >= 5600 {
+                                // 过滤短于 0.5 秒或过短杂音段 (8000 个采样点)，绝不吐出 "ed."、"not." 等残破碎词！
+                                if samples.len() >= 8000 {
                                     if let Some(ref rec) = current_recognizer {
                                         let start = std::time::Instant::now();
                                         let stream = rec.create_stream();
@@ -325,6 +325,11 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                             let raw_text = result.text.trim();
                                             if !raw_text.is_empty() {
                                                 let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
+                                                // 过滤少于两个有效字符的残断词
+                                                if clean_text.trim().chars().count() < 2 {
+                                                    vad.pop();
+                                                    continue;
+                                                }
                                                 let asr_latency = start.elapsed().as_millis();
                                                 subtitle_seq += 1;
                                                 let msg_id = subtitle_seq;
