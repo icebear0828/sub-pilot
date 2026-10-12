@@ -35,6 +35,7 @@ pub struct OpenAIResponse {
 pub struct AppState {
     pub tx: broadcast::Sender<SubtitlePayload>,
     pub recognizer: Option<Arc<OfflineRecognizer>>,
+    pub http_client: reqwest::Client,
 }
 
 #[tokio::main]
@@ -103,7 +104,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let (tx, _) = broadcast::channel(100);
-    let state = AppState { tx, recognizer };
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(2000))
+        .build()
+        .unwrap_or_default();
+
+    let state = AppState { tx, recognizer, http_client };
 
     let app = Router::new()
         // 0. 内置轻量实时字幕 WebUI（方便手机/iPad/电脑无安装使用）
@@ -165,6 +171,7 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
     // 上行通道：接收客户端推流上来的 PCM 二进制音频
     let recognizer = state.recognizer.clone();
     let tx = state.tx.clone();
+    let http_client = state.http_client.clone();
 
     let mut recv_task = tokio::spawn(async move {
         let mut audio_buffer: Vec<f32> = Vec::with_capacity(16000 * 2);
@@ -191,14 +198,10 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                                 let raw_text = result.text.trim();
                                 if !raw_text.is_empty() {
                                     let (lang, clean_text) = parse_sense_voice_text(raw_text);
-                                    let latency = start.elapsed().as_millis();
 
-                                    // 自动路由翻译
-                                    let translated = if lang == "zh" {
-                                        clean_text.clone()
-                                    } else {
-                                        format!("[{}] {}", lang.to_uppercase(), clean_text)
-                                    };
+                                    // 自动极速翻译为地道中文（中文则不重复翻译）
+                                    let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
+                                    let latency = start.elapsed().as_millis();
 
                                     let payload = SubtitlePayload {
                                         text: clean_text,
@@ -329,3 +332,85 @@ fn parse_sense_voice_text(text: &str) -> (String, String) {
 
     (lang, clean_text)
 }
+
+/// 自动将外语极速翻译为地道简体中文；若是中文则返回空字符串，彻底防止双语中文重复！
+async fn translate_to_chinese(client: &reqwest::Client, text: &str, lang: &str) -> String {
+    // 1. 如果本身就是中文/粤语，无需翻译，返回空字符串让前端只显示单行中文
+    if lang == "zh" || lang == "yue" {
+        return String::new();
+    }
+
+    // 2. 优先检查用户是否配置了外部 LLM 翻译接口 (如 DeepSeek, OpenAI, 本地翻译模型等)
+    if let Ok(api_url) = std::env::var("LLM_TRANSLATE_URL") {
+        let api_key = std::env::var("LLM_TRANSLATE_KEY").unwrap_or_else(|_| "none".to_string());
+        let model = std::env::var("LLM_TRANSLATE_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
+
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a professional subtitle translator. Translate the input audio text into natural, concise Simplified Chinese subtitles. Output translation only, without explanation, quotes, or notes."},
+                {"role": "user", "content": text}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 120
+        });
+
+        if let Ok(resp) = client.post(&api_url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&body)
+            .timeout(std::time::Duration::from_millis(1500))
+            .send()
+            .await 
+        {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 默认开箱即用：自动调用免 Key 极速神经翻译接口 (耗时仅 80ms ~ 150ms)
+    let sl = match lang {
+        "ja" => "ja",
+        "en" => "en",
+        "ko" => "ko",
+        _ => "auto",
+    };
+
+    if let Ok(resp) = client.get("https://translate.googleapis.com/translate_a/single")
+        .query(&[
+            ("client", "gtx"),
+            ("sl", sl),
+            ("tl", "zh-CN"),
+            ("dt", "t"),
+            ("q", text),
+        ])
+        .header("User-Agent", "Mozilla/5.0")
+        .timeout(std::time::Duration::from_millis(1200))
+        .send()
+        .await
+    {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            if let Some(arr) = json.get(0).and_then(|v| v.as_array()) {
+                let mut translated = String::new();
+                for item in arr {
+                    if let Some(seg) = item.get(0).and_then(|v| v.as_str()) {
+                        translated.push_str(seg);
+                    }
+                }
+                let trimmed = translated.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    // 4. 若所有翻译通道均因断网超时，回退为前缀标识
+    format!("[{}] {}", lang.to_uppercase(), text)
+}
+

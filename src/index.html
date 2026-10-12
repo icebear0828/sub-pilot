@@ -208,21 +208,40 @@
       card.className = 'subtitle-card';
       
       const currentFontSize = fontSizes[currentFontSizeIndex];
+      const lang = (payload.language || payload.lang || 'AUTO').toUpperCase();
+      const rawText = payload.text || payload.original || '';
+      const translatedText = payload.translated || '';
 
-      card.innerHTML = `
-        <div class="original-line">
-          <span class="lang-tag">${payload.lang || 'AUTO'}</span>
-          <span>${escapeHtml(payload.original)}</span>
-        </div>
-        <div class="translated-line" style="font-size: ${currentFontSize}">
-          ${escapeHtml(payload.translated)}
-        </div>
-        <div class="meta-line">
-          <span>⚡ 推理: ${payload.latency_ms} ms</span>
-        </div>
-      `;
+      // 如果是中文或没有翻译（本身就是母语），只显示单行大字幕，避免双语重复
+      const isChinese = lang === 'ZH' || lang === 'YUE' || !translatedText;
 
-      // 保持只显示最新的两句字幕
+      if (isChinese) {
+        card.innerHTML = `
+          <div class="translated-line" style="font-size: ${currentFontSize}">
+            ${escapeHtml(rawText)}
+          </div>
+          <div class="meta-line">
+            <span>🇨🇳 中文原音</span>
+            <span>⚡ 推理: ${payload.latency_ms} ms</span>
+          </div>
+        `;
+      } else {
+        // 外语（如日漫、美剧、韩语）：上方原音小字，下方地道中文大字
+        card.innerHTML = `
+          <div class="original-line">
+            <span class="lang-tag">${escapeHtml(lang)}</span>
+            <span>${escapeHtml(rawText)}</span>
+          </div>
+          <div class="translated-line" style="font-size: ${currentFontSize}">
+            ${escapeHtml(translatedText)}
+          </div>
+          <div class="meta-line">
+            <span>⚡ 推理: ${payload.latency_ms} ms</span>
+          </div>
+        `;
+      }
+
+      // 保持只显示最新的字幕
       subContainer.innerHTML = '';
       subContainer.appendChild(card);
     }
