@@ -2,358 +2,550 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Sub-Pilot 局域网实时生肉字幕</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subtitle HUD</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-glass: rgba(16, 18, 27, 0.88);
+      --border-glass: rgba(255, 255, 255, 0.14);
+      --accent-color: #00d2d3;
+      --accent-gradient: linear-gradient(135deg, #00d2d3 0%, #54a0ff 100%);
+      --text-main: #ffffff;
+      --text-sub: #ffd32a;
+      --text-muted: rgba(255, 255, 255, 0.55);
+      --danger: #ff4757;
+      --success: #2ed573;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
     body {
-      background-color: rgba(10, 10, 14, 0.92);
-      color: #fff;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      min-height: 100vh;
+      background: transparent;
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
-      overflow-x: hidden;
-      user-select: none;
     }
-    header {
-      padding: 12px 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: rgba(255, 255, 255, 0.04);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(12px);
-    }
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      padding: 4px 10px;
-      border-radius: 20px;
-      background: rgba(255, 255, 255, 0.08);
-    }
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #ff4757;
-    }
-    .dot.connected { background: #2ed573; box-shadow: 0 0 8px #2ed573; }
-    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-    .controls {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-    }
-    button, select {
-      background: rgba(255, 255, 255, 0.12);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      padding: 6px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
-      outline: none;
-      transition: all 0.2s;
-    }
-    button:hover, select:hover { background: rgba(255, 255, 255, 0.22); }
-    select option { background: #222; color: #fff; }
-    button.active {
-      background: #00d2d3;
-      color: #111;
-      font-weight: 600;
-      border-color: #00d2d3;
-    }
-    main {
+
+    /* ─── 悬浮窗主容器 ─── */
+    .hud-window {
+      position: relative;
       flex: 1;
       display: flex;
       flex-direction: column;
-      justify-content: flex-end;
-      padding: 24px 30px;
-      gap: 16px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-glass);
+      border-radius: 14px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      transition: background 0.25s, border-color 0.25s;
     }
-    .subtitle-card {
-      background: rgba(0, 0, 0, 0.65);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 16px;
-      padding: 24px 28px;
-      backdrop-filter: blur(16px);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-      animation: fadeIn 0.15s ease-out;
+
+    .hud-window.transparent-mode {
+      background: rgba(10, 10, 15, 0.25);
+      border-color: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
     }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
+
+    /* ─── 顶栏 (拖拽区 + 快捷控制 + 关闭按钮) ─── */
+    .hud-header {
+      height: 38px;
+      padding: 0 10px 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: grab;
     }
-    .original-line {
-      font-size: 17px;
-      color: #ffd32a;
-      margin-bottom: 8px;
+    .hud-header:active {
+      cursor: grabbing;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #00d2d3;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--danger);
+      transition: background 0.3s;
+    }
+    .status-dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+    .status-dot.connecting {
+      background: #ffa502;
+    }
+
+    /* 顶栏右侧按钮组 */
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: default;
+    }
+
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.15s;
+    }
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+    .icon-btn.active {
+      background: rgba(0, 210, 211, 0.25);
+      color: var(--accent-color);
+    }
+    .icon-btn.close-btn:hover {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    /* ─── 主体字幕显示区 ─── */
+    .hud-body {
+      flex: 1;
+      padding: 12px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 8px;
+      min-height: 0;
+      position: relative;
+    }
+
+    .sub-original {
+      font-size: 15px;
+      line-height: 1.4;
+      color: var(--text-sub);
       display: flex;
       align-items: center;
       gap: 8px;
-      line-height: 1.4;
+      opacity: 0.9;
     }
-    .lang-tag {
-      font-size: 11px;
+
+    .lang-badge {
+      font-size: 10px;
       font-weight: 700;
-      padding: 2px 6px;
+      padding: 1px 5px;
       border-radius: 4px;
-      background: rgba(255, 211, 42, 0.2);
-      color: #ffd32a;
+      background: rgba(255, 211, 42, 0.18);
       border: 1px solid rgba(255, 211, 42, 0.4);
-      text-transform: uppercase;
+      color: var(--text-sub);
     }
-    .translated-line {
-      font-size: 28px;
+
+    .original-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .sub-translation {
+      font-size: 24px;
       font-weight: 600;
-      line-height: 1.4;
-      color: #ffffff;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
-      letter-spacing: 0.5px;
+      line-height: 1.35;
+      color: var(--text-main);
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: font-size 0.2s;
     }
-    .meta-line {
-      margin-top: 8px;
-      font-size: 12px;
-      color: rgba(255, 255, 255, 0.4);
+
+    .cursor-blink {
+      display: inline-block;
+      animation: blink 0.9s infinite;
+      color: var(--accent-color);
+      font-weight: 300;
+      margin-left: 2px;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* ─── 设置面板 (抽屉式展开) ─── */
+    .settings-panel {
+      position: absolute;
+      top: 38px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(14, 16, 24, 0.96);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      padding: 16px 20px;
       display: flex;
-      justify-content: flex-end;
+      flex-direction: column;
+      gap: 14px;
+      z-index: 100;
+      border-bottom-left-radius: 14px;
+      border-bottom-right-radius: 14px;
+      transform: translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s;
+    }
+
+    .settings-panel.open {
+      transform: translateY(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       gap: 12px;
     }
-    footer {
-      padding: 10px 20px;
+
+    .settings-label {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.8);
+      white-space: nowrap;
+    }
+
+    .settings-input, .settings-select {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
       font-size: 12px;
-      color: rgba(255, 255, 255, 0.35);
-      text-align: center;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .settings-input:focus, .settings-select:focus {
+      border-color: var(--accent-color);
+    }
+    .settings-select option {
+      background: #1c1e2b;
+      color: #fff;
+    }
+
+    .save-btn {
+      background: var(--accent-color);
+      color: #111;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .save-btn:hover {
+      opacity: 0.9;
+    }
+
+    .settings-tip {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="status-badge">
-      <div id="statusDot" class="dot"></div>
-      <span id="statusText">连接中...</span>
-    </div>
-    <div class="controls">
-      <select id="langSelect" title="语种锁定模式">
-        <option value="auto">🌐 自动识别</option>
-        <option value="ja">🇯🇵 日语 (追番/生肉)</option>
-        <option value="en">🇺🇸 英语 (美剧/公开课)</option>
-        <option value="zh">🇨🇳 中文 (仅字幕)</option>
-        <option value="ko">🇰🇷 韩语</option>
-      </select>
-      <button id="toggleAudioBtn">🎙️ 本机音频推流</button>
-      <button id="fontSizeBtn">🔠 字体大小</button>
-      <button id="opacityBtn">🌓 透明背景</button>
-    </div>
-  </header>
 
-  <main id="subContainer">
-    <div class="subtitle-card">
-      <div class="original-line">
-        <span class="lang-tag">READY</span>
-        <span>Sub-Pilot 局域网超低延迟实时字幕系统已就绪</span>
+  <div class="hud-window" id="hudWindow">
+    <!-- 顶栏 (拖拽区 + 状态 + 关闭与设置等按钮) -->
+    <header class="hud-header" id="dragHeader">
+      <div class="header-left">
+        <span class="brand-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+          Sub-Pilot HUD
+        </span>
+        <div class="status-indicator">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">连接中</span>
+        </div>
       </div>
-      <div class="translated-line" id="mainSub">
-        等待视频音频信号接入...
+
+      <div class="header-actions">
+        <!-- 字体大小切换 -->
+        <button class="icon-btn" id="fontSizeBtn" title="调整字号 (小/中/大/特大)">🔠</button>
+        <!-- 背景透明度切换 -->
+        <button class="icon-btn" id="opacityBtn" title="切换透明极简模式">🌓</button>
+        <!-- 鼠标穿透开关 -->
+        <button class="icon-btn" id="passthroughBtn" title="鼠标穿透锁定 (按 F8 解除)">🎯</button>
+        <!-- 设置按钮 -->
+        <button class="icon-btn" id="settingsToggleBtn" title="打开/关闭设置">⚙️</button>
+        <!-- 关闭窗口按钮 -->
+        <button class="icon-btn close-btn" id="closeBtn" title="关闭悬浮字幕">✕</button>
       </div>
-      <div class="meta-line">
-        <span>延迟: -- ms</span>
-        <span>后端: Rust + SenseVoice ONNX</span>
+    </header>
+
+    <!-- 字幕显示主区域 -->
+    <main class="hud-body" id="hudBody">
+      <div class="sub-original">
+        <span class="lang-badge" id="langBadge">READY</span>
+        <span class="original-text" id="originalText">等待音频信号输入...</span>
+      </div>
+      <div class="sub-translation" id="translatedText">
+        Sub-Pilot 实时多语言字幕就绪
+      </div>
+    </main>
+
+    <!-- 设置抽屉面板 -->
+    <div class="settings-panel" id="settingsPanel">
+      <div class="settings-row">
+        <span class="settings-label">服务地址:</span>
+        <input type="text" class="settings-input" id="serverUrlInput" placeholder="ws://192.168.x.x:8765/v1/audio/stream">
+        <button class="save-btn" id="saveUrlBtn">保存</button>
+      </div>
+
+      <div class="settings-row">
+        <span class="settings-label">目标语种:</span>
+        <select class="settings-select" id="languageSelect">
+          <option value="auto">🌐 自动识别</option>
+          <option value="ja">🇯🇵 日语 (追番/生肉)</option>
+          <option value="en">🇺🇸 英语 (美剧/公开课/会议)</option>
+          <option value="zh">🇨🇳 中文 (仅原文字幕)</option>
+          <option value="ko">🇰🇷 韩语</option>
+        </select>
+      </div>
+
+      <div class="settings-row">
+        <span class="settings-label">翻译模式:</span>
+        <select class="settings-select" id="translateToggle">
+          <option value="true">✨ 启用双语智能翻译 (ASR + 大模型)</option>
+          <option value="false">⚡ 仅 ASR 识别 (极致超低延迟)</option>
+        </select>
+      </div>
+
+      <div class="settings-tip">
+        💡 提示：按住顶栏可自由拖拽位置；右下角/边缘可缩放尺寸；若点击了“鼠标穿透”锁定屏幕，随时按下 <b>F8</b> 键即可退出穿透！
       </div>
     </div>
-  </main>
-
-  <footer>
-    局域网无感推流 · 统一内存 32GB Mac 本地算力加速 · 极速多语言路由
-  </footer>
+  </div>
 
   <script>
+    // ── Tauri API 探测与包装 ──────────────────────────────────────
+    const hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
+    const invoke = hasTauri ? window.__TAURI__.core.invoke : async () => {};
+
+    // DOM 元素引用
+    const hudWindow = document.getElementById('hudWindow');
+    const dragHeader = document.getElementById('dragHeader');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
-    const subContainer = document.getElementById('subContainer');
-    const toggleAudioBtn = document.getElementById('toggleAudioBtn');
+    const langBadge = document.getElementById('langBadge');
+    const originalText = document.getElementById('originalText');
+    const translatedText = document.getElementById('translatedText');
+
     const fontSizeBtn = document.getElementById('fontSizeBtn');
     const opacityBtn = document.getElementById('opacityBtn');
-    const langSelect = document.getElementById('langSelect');
+    const passthroughBtn = document.getElementById('passthroughBtn');
+    const settingsToggleBtn = document.getElementById('settingsToggleBtn');
+    const closeBtn = document.getElementById('closeBtn');
 
-    let ws;
-    let audioContext;
-    let mediaStream;
-    let isStreamingAudio = false;
-    let currentFontSizeIndex = 1;
-    const fontSizes = ['22px', '28px', '36px', '44px'];
-    let isTransparent = false;
+    const settingsPanel = document.getElementById('settingsPanel');
+    const serverUrlInput = document.getElementById('serverUrlInput');
+    const saveUrlBtn = document.getElementById('saveUrlBtn');
+    const languageSelect = document.getElementById('languageSelect');
+    const translateToggle = document.getElementById('translateToggle');
 
-    function sendLanguageChoice() {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const lang = langSelect.value;
-        ws.send(JSON.stringify({ action: 'set_language', language: lang }));
-      }
-    }
+    // 字号循环
+    const fontSizes = ['18px', '22px', '26px', '32px'];
+    let currentFontSizeIdx = 1;
 
-    langSelect.addEventListener('change', sendLanguageChoice);
-
-    function connectWs() {
-      const loc = window.location;
-      const wsUri = (loc.protocol === 'https:' ? 'wss://' : 'ws://') + loc.host + '/ws';
-      ws = new WebSocket(wsUri);
-
-      ws.onopen = () => {
-        statusDot.classList.add('connected');
-        statusText.innerText = '已连接到 Mac 算力中心';
-        sendLanguageChoice();
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          renderSubtitle(payload);
-        } catch (e) {
-          console.error(e);
-        }
-      };
-
-      ws.onclose = () => {
-        statusDot.classList.remove('connected');
-        statusText.innerText = '连接断开，3秒后重连...';
-        setTimeout(connectWs, 3000);
-      };
-    }
-
-    function renderSubtitle(payload) {
-      const currentFontSize = fontSizes[currentFontSizeIndex];
-      const lang = (payload.language || payload.lang || 'AUTO').toUpperCase();
-      const rawText = payload.text || payload.original || '';
-      const translatedText = payload.translated || '';
-      const isChinese = lang === 'ZH' || lang === 'YUE';
-
-      // 检查当前屏幕上是否已有这句字幕卡片（阶段 1 刚上屏）
-      let card = document.getElementById(`sub-card-${payload.id}`);
-
-      if (!card) {
-        card = document.createElement('div');
-        card.className = 'subtitle-card';
-        card.id = `sub-card-${payload.id}`;
-
-        // 保持只显示最新的字幕
-        subContainer.innerHTML = '';
-        subContainer.appendChild(card);
-      }
-
-      const isPartial = payload.is_final === false || payload.stage === 'partial';
-
-      if (isChinese) {
-        card.innerHTML = `
-          <div class="translated-line" style="font-size: ${currentFontSize}">
-            ${escapeHtml(rawText)}${isPartial ? '<span style="opacity: 0.6; animation: blink 1s infinite;"> ▎</span>' : ''}
-          </div>
-          <div class="meta-line">
-            <span>🇨🇳 中文原音</span>
-            <span>${isPartial ? '⚡ 流式输入中' : `⚡ 推理: ${payload.latency_ms} ms`}</span>
-          </div>
-        `;
-      } else {
-        // 外语（日/英/韩）：三段式流式显示
-        // 1. partial: 打字机流式增量（带闪烁光标 ▎）
-        // 2. asr: 停顿原音定稿
-        // 3. trans: 智能意译完成
-        let transContent;
-        if (translatedText) {
-          transContent = escapeHtml(translatedText);
-        } else if (isPartial) {
-          transContent = `<span style="opacity: 0.35; font-size: 0.85em; font-weight: 400;">正在实时输入...</span>`;
-        } else {
-          transContent = `<span style="opacity: 0.45; font-size: 0.85em; font-weight: 400;">正在智能意译...</span>`;
-        }
-
-        card.innerHTML = `
-          <div class="original-line">
-            <span class="lang-tag">${escapeHtml(lang)}</span>
-            <span>${escapeHtml(rawText)}${isPartial ? '<span style="opacity: 0.7; animation: blink 0.8s infinite;"> ▎</span>' : ''}</span>
-          </div>
-          <div class="translated-line" style="font-size: ${currentFontSize}">
-            ${transContent}
-          </div>
-          <div class="meta-line">
-            <span>${payload.stage === 'trans' ? '🎬 意译完成' : (isPartial ? '⚡ 正在说话' : '✅ 定稿跟读')}</span>
-            <span>${isPartial ? '实时打字' : `延迟: ${payload.latency_ms} ms`}</span>
-          </div>
-        `;
-      }
-    }
-
-    function escapeHtml(text) {
-      if (!text) return '';
-      return text.replace(/[&<>"']/g, (m) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-      }[m]));
-    }
-
-    // 本机音频推流（将当前设备的麦克风/内录音频推给 Mac 进行 ASR）
-    toggleAudioBtn.addEventListener('click', async () => {
-      if (!isStreamingAudio) {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          const httpsUrl = 'https://' + window.location.hostname + ':8766/';
-          alert('当前浏览器禁止在非安全 HTTP 页面录音。\n\n请直接访问 HTTPS 加密通道以启用麦克风：\n' + httpsUrl);
-          return;
-        }
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
-          audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-          const source = audioContext.createMediaStreamSource(mediaStream);
-          const processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-          processor.onaudioprocess = (e) => {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            const inputData = e.inputBuffer.getChannelData(0);
-            // 转换为 16-bit PCM 二进制发送
-            const pcmBuffer = new ArrayBuffer(inputData.length * 2);
-            const view = new DataView(pcmBuffer);
-            for (let i = 0; i < inputData.length; i++) {
-              let s = Math.max(-1, Math.min(1, inputData[i]));
-              view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-            }
-            ws.send(pcmBuffer);
-          };
-
-          source.connect(processor);
-          processor.connect(audioContext.destination);
-
-          isStreamingAudio = true;
-          toggleAudioBtn.classList.add('active');
-          toggleAudioBtn.innerText = '🔴 正在推流音频';
-        } catch (err) {
-          alert('无法启动音频录制: ' + err.message);
-        }
-      } else {
-        if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
-        if (audioContext) audioContext.close();
-        isStreamingAudio = false;
-        toggleAudioBtn.classList.remove('active');
-        toggleAudioBtn.innerText = '🎙️ 本机音频推流';
+    // ── 拖拽窗口与窗口关闭 ──────────────────────────────────────────
+    dragHeader.addEventListener('mousedown', (e) => {
+      // 避免点击按钮或设置时触发拖拽
+      if (e.target.closest('.header-actions') || e.target.closest('.settings-panel')) return;
+      if (hasTauri) {
+        invoke('start_dragging').catch(console.error);
       }
     });
 
-    // 字体调节
+    closeBtn.addEventListener('click', () => {
+      if (hasTauri) {
+        invoke('close_window').catch(console.error);
+      } else {
+        window.close();
+      }
+    });
+
+    // ── 设置抽屉开关 ──────────────────────────────────────────────
+    settingsToggleBtn.addEventListener('click', () => {
+      const isOpen = settingsPanel.classList.toggle('open');
+      settingsToggleBtn.classList.toggle('active', isOpen);
+    });
+
+    // ── 字号调节 ──────────────────────────────────────────────────
     fontSizeBtn.addEventListener('click', () => {
-      currentFontSizeIndex = (currentFontSizeIndex + 1) % fontSizes.length;
-      document.querySelectorAll('.translated-line').forEach(el => {
-        el.style.fontSize = fontSizes[currentFontSizeIndex];
-      });
+      currentFontSizeIdx = (currentFontSizeIdx + 1) % fontSizes.length;
+      translatedText.style.fontSize = fontSizes[currentFontSizeIdx];
     });
 
-    // 透明背景调节
+    // ── 背景透明度切换 ────────────────────────────────────────────
     opacityBtn.addEventListener('click', () => {
-      isTransparent = !isTransparent;
-      document.body.style.backgroundColor = isTransparent ? 'rgba(0, 0, 0, 0.15)' : 'rgba(10, 10, 14, 0.92)';
+      const isTransparent = hudWindow.classList.toggle('transparent-mode');
       opacityBtn.classList.toggle('active', isTransparent);
     });
 
-    connectWs();
+    // ── 鼠标穿透模式 ──────────────────────────────────────────────
+    passthroughBtn.addEventListener('click', async () => {
+      if (hasTauri) {
+        try {
+          await invoke('set_passthrough', { enabled: true });
+          passthroughBtn.classList.add('active');
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        alert('鼠标穿透需在桌面客户端中生效 (按 F8 恢复鼠标可点)');
+      }
+    });
+
+    // ── 保存设置 ──────────────────────────────────────────────────
+    saveUrlBtn.addEventListener('click', async () => {
+      const url = serverUrlInput.value.trim();
+      if (!url) return;
+      if (hasTauri) {
+        try {
+          await invoke('set_server_url', { url });
+          saveUrlBtn.innerText = '已更新';
+          setTimeout(() => { saveUrlBtn.innerText = '保存'; }, 1500);
+        } catch (e) {
+          alert('设置失败: ' + e);
+        }
+      }
+    });
+
+    languageSelect.addEventListener('change', async () => {
+      const lang = languageSelect.value;
+      if (hasTauri) {
+        try {
+          await invoke('set_language', { language: lang });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    });
+
+    translateToggle.addEventListener('change', async () => {
+      const enabled = translateToggle.value === 'true';
+      if (hasTauri) {
+        try {
+          await invoke('set_translation_enabled', { enabled });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    });
+
+    // ── 定时轮询客户端状态快照 ────────────────────────────────────
+    async function syncSnapshot() {
+      if (!hasTauri) return;
+      try {
+        const snap = await invoke('get_snapshot');
+        if (snap) {
+          // 状态连接灯
+          statusDot.className = 'status-dot';
+          if (snap.status === 'connected') {
+            statusDot.classList.add('connected');
+            statusText.innerText = '已连接';
+          } else if (snap.status === 'connecting') {
+            statusDot.classList.add('connecting');
+            statusText.innerText = '连接中...';
+          } else {
+            statusText.innerText = '离线/重试中';
+          }
+
+          // 鼠标穿透
+          passthroughBtn.classList.toggle('active', snap.passthrough);
+
+          // 同步输入框 (仅在未编辑时)
+          if (!serverUrlInput.matches(':focus') && snap.serverUrl) {
+            serverUrlInput.value = snap.serverUrl;
+          }
+          if (snap.language && languageSelect.value !== snap.language) {
+            languageSelect.value = snap.language;
+          }
+          if (snap.translationEnabled !== undefined) {
+            translateToggle.value = String(snap.translationEnabled);
+          }
+
+          // 字幕渲染
+          if (snap.subtitle) {
+            const sub = snap.subtitle;
+            const lang = (sub.language || snap.language || 'AUTO').toUpperCase();
+            langBadge.innerText = lang;
+
+            const isPartial = sub.isFinal === false || sub.stage === 'partial';
+            const cursorHtml = isPartial ? '<span class="cursor-blink">▎</span>' : '';
+
+            originalText.innerHTML = (sub.text || '等待原文...') + cursorHtml;
+
+            if (sub.translated) {
+              translatedText.innerText = sub.translated;
+            } else if (isPartial) {
+              translatedText.innerText = '正在实时输入...';
+            } else {
+              translatedText.innerText = sub.text || '等待音频接入...';
+            }
+          }
+        }
+      } catch (e) {
+        console.error('syncSnapshot error:', e);
+      }
+    }
+
+    if (hasTauri) {
+      setInterval(syncSnapshot, 50);
+      syncSnapshot();
+    }
   </script>
 </body>
 </html>
