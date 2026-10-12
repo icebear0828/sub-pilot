@@ -273,40 +273,11 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                     if let Some(ref mut vad) = vad_detector {
                         vad.accept_waveform(&chunk);
 
-                        // 2.1 说话中：打字机流式增量识别 (is_final: false)
+                        // 2.1 说话中：仅收集语音数据，坚决不进行非因果伪增量推断！
+                        // 根因：SenseVoice 是非因果全局 Attention 模型，不具备原生流式特性，中间半截音频会导致全局重猜幻觉。
+                        // 官方最佳实践：VAD 期间稳定收集波形，静音断句时瞬间一次性出整句高精度结果。
                         if vad.detected() {
                             live_speech_buffer.extend_from_slice(&chunk);
-
-                            // 每隔约 250ms 且累计至少 0.3s (4800采样点) 进行一次打字机快速推断
-                            if last_partial_time.elapsed() >= std::time::Duration::from_millis(250)
-                                && live_speech_buffer.len() >= 4800
-                            {
-                                last_partial_time = std::time::Instant::now();
-                                if let Some(ref rec) = current_recognizer {
-                                    let stream = rec.create_stream();
-                                    stream.accept_waveform(16000, &live_speech_buffer);
-                                    rec.decode(&stream);
-
-                                    if let Some(result) = stream.get_result() {
-                                        let raw_text = result.text.trim();
-                                        if !raw_text.is_empty() {
-                                            let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
-                                            if !clean_text.is_empty() {
-                                                let payload = SubtitlePayload {
-                                                    id: subtitle_seq + 1, // 当前正在说的句号预留位
-                                                    is_final: false,
-                                                    stage: "partial".to_string(),
-                                                    text: clean_text,
-                                                    translated: String::new(),
-                                                    language: lang,
-                                                    latency_ms: 0,
-                                                };
-                                                let _ = tx.send(payload);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
 
                         // 2.2 句末停顿触发：VAD 产生完整语音句 (is_final: true)
@@ -602,47 +573,41 @@ fn parse_sense_voice_text(text: &str, target_lang: Option<&str>) -> (String, Str
     (final_lang, clean_text)
 }
 
-/// 自动将外语极速翻译为地道简体中文；若是中文则返回空字符串，彻底防止双语中文重复！
+/// 自动将外语极速意译为地道简体中文；若是中文则返回空字符串，彻底防止双语中文重复！
 async fn translate_to_chinese(client: &reqwest::Client, text: &str, lang: &str) -> String {
     // 1. 如果本身就是中文/粤语，无需翻译，返回空字符串让前端只显示单行中文
     if lang == "zh" || lang == "yue" {
         return String::new();
     }
 
-    // 2. 优先检查用户是否配置了外部 LLM 翻译接口 (如 DeepSeek, OpenAI, 本地翻译模型等)
-    if let Ok(api_url) = std::env::var("LLM_TRANSLATE_URL") {
-        let api_key = std::env::var("LLM_TRANSLATE_KEY").unwrap_or_else(|_| "none".to_string());
-        let model = std::env::var("LLM_TRANSLATE_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
+    // 2. 优先尝试专为追番生肉/双语影视打造的 Bilibili Index-Translate 35B 智能意译大模型接口 (毫秒级响应，译文极地道)
+    let b_body = serde_json::json!({
+        "model": "Index-Translate-35B-A3B",
+        "messages": [
+            {
+                "role": "user",
+                "content": format!("请将以下内容翻译为中文，只输出译文，不要解释：\n\n{}", text)
+            }
+        ]
+    });
 
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a professional subtitle translator. Translate the input audio text into natural, concise Simplified Chinese subtitles. Output translation only, without explanation, quotes, or notes."},
-                {"role": "user", "content": text}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 120
-        });
-
-        if let Ok(resp) = client.post(&api_url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .json(&body)
-            .timeout(std::time::Duration::from_millis(1500))
-            .send()
-            .await 
-        {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        return trimmed.to_string();
-                    }
+    if let Ok(resp) = client.post("https://index-translate.bilibili.com/v1/chat/completions")
+        .json(&b_body)
+        .timeout(std::time::Duration::from_millis(2500))
+        .send()
+        .await
+    {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
                 }
             }
         }
     }
 
-    // 3. 默认开箱即用：自动调用免 Key 极速神经翻译接口 (耗时仅 80ms ~ 150ms)
+    // 3. 次级回退：Google Translate 极速通道 (超时拓宽至 2500ms，防止被截断)
     let sl = match lang {
         "ja" => "ja",
         "en" => "en",
@@ -659,7 +624,7 @@ async fn translate_to_chinese(client: &reqwest::Client, text: &str, lang: &str) 
             ("q", text),
         ])
         .header("User-Agent", "Mozilla/5.0")
-        .timeout(std::time::Duration::from_millis(1200))
+        .timeout(std::time::Duration::from_millis(2500))
         .send()
         .await
     {
