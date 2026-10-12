@@ -1,17 +1,86 @@
-# Rust target output
+# ==============================================================================
+# Rust Build Artifacts
+# ==============================================================================
 target/
 **/target/
 **/*.rs.bk
+*.pdb
+*.d
+*.rlib
 
-# Large model files (downloaded via download_model.sh)
-/models/
-*.tar.bz2
+# Cargo
+Cargo.lock.backup
+
+# ==============================================================================
+# Large Model Weights & Datasets (Downloaded via download_model.sh)
+# ==============================================================================
+models/
+**/models/
 *.onnx
+*.int8.onnx
+*.bin
+*.tar.bz2
+*.tar.gz
+*.tar
+*.zip
 
-# Logs
+# Audio test dumps & recorded buffers
+*.pcm
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.aac
+test_audio/
+recordings/
+
+# ==============================================================================
+# Logs & Diagnostic Files
+# ==============================================================================
 *.log
 *.error.log
+logs/
+**/logs/
 
-# OS artifacts
+# ==============================================================================
+# Environment & Secrets
+# ==============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# ==============================================================================
+# IDE & Editor Directories
+# ==============================================================================
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.fleet/
+
+# ==============================================================================
+# OS Generated Files
+# ==============================================================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+[Dd]esktop.ini
+
+# ==============================================================================
+# Temporary / Scratch Files
+# ==============================================================================
+tmp/
+temp/
+scratch/
