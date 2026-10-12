@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Sub-Pilot 局域网实时生肉字幕</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: rgba(10, 10, 14, 0.92);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      user-select: none;
+    }
+    header {
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.04);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(12px);
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff4757;
+    }
+    .dot.connected { background: #2ed573; box-shadow: 0 0 8px #2ed573; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      padding: 6px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    button:hover { background: rgba(255, 255, 255, 0.22); }
+    button.active {
+      background: #00d2d3;
+      color: #111;
+      font-weight: 600;
+      border-color: #00d2d3;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 24px 30px;
+      gap: 16px;
+    }
+    .subtitle-card {
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 24px 28px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      animation: fadeIn 0.15s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .original-line {
+      font-size: 17px;
+      color: #ffd32a;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      line-height: 1.4;
+    }
+    .lang-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 211, 42, 0.2);
+      color: #ffd32a;
+      border: 1px solid rgba(255, 211, 42, 0.4);
+      text-transform: uppercase;
+    }
+    .translated-line {
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: #ffffff;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      letter-spacing: 0.5px;
+    }
+    .meta-line {
+      margin-top: 8px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.4);
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+    }
+    footer {
+      padding: 10px 20px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.35);
+      text-align: center;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="status-badge">
+      <div id="statusDot" class="dot"></div>
+      <span id="statusText">连接中...</span>
+    </div>
+    <div class="controls">
+      <button id="toggleAudioBtn">🎙️ 本机音频推流</button>
+      <button id="fontSizeBtn">🔠 字体大小</button>
+      <button id="opacityBtn">🌓 透明背景</button>
+    </div>
+  </header>
+
+  <main id="subContainer">
+    <div class="subtitle-card">
+      <div class="original-line">
+        <span class="lang-tag">READY</span>
+        <span>Sub-Pilot 局域网超低延迟实时字幕系统已就绪</span>
+      </div>
+      <div class="translated-line" id="mainSub">
+        等待视频音频信号接入...
+      </div>
+      <div class="meta-line">
+        <span>延迟: -- ms</span>
+        <span>后端: Rust + SenseVoice ONNX</span>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    局域网无感推流 · 统一内存 32GB Mac 本地算力加速 · 极速多语言路由
+  </footer>
+
+  <script>
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const subContainer = document.getElementById('subContainer');
+    const toggleAudioBtn = document.getElementById('toggleAudioBtn');
+    const fontSizeBtn = document.getElementById('fontSizeBtn');
+    const opacityBtn = document.getElementById('opacityBtn');
+
+    let ws;
+    let audioContext;
+    let mediaStream;
+    let isStreamingAudio = false;
+    let currentFontSizeIndex = 1;
+    const fontSizes = ['22px', '28px', '36px', '44px'];
+    let isTransparent = false;
+
+    function connectWs() {
+      const loc = window.location;
+      const wsUri = (loc.protocol === 'https:' ? 'wss://' : 'ws://') + loc.host + '/ws';
+      ws = new WebSocket(wsUri);
+
+      ws.onopen = () => {
+        statusDot.classList.add('connected');
+        statusText.innerText = '已连接到 Mac 算力中心';
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          renderSubtitle(payload);
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      ws.onclose = () => {
+        statusDot.classList.remove('connected');
+        statusText.innerText = '连接断开，3秒后重连...';
+        setTimeout(connectWs, 3000);
+      };
+    }
+
+    function renderSubtitle(payload) {
+      const card = document.createElement('div');
+      card.className = 'subtitle-card';
+      
+      const currentFontSize = fontSizes[currentFontSizeIndex];
+
+      card.innerHTML = `
+        <div class="original-line">
+          <span class="lang-tag">${payload.lang || 'AUTO'}</span>
+          <span>${escapeHtml(payload.original)}</span>
+        </div>
+        <div class="translated-line" style="font-size: ${currentFontSize}">
+          ${escapeHtml(payload.translated)}
+        </div>
+        <div class="meta-line">
+          <span>⚡ 推理: ${payload.latency_ms} ms</span>
+        </div>
+      `;
+
+      // 保持只显示最新的两句字幕
+      subContainer.innerHTML = '';
+      subContainer.appendChild(card);
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text.replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      }[m]));
+    }
+
+    // 本机音频推流（将当前设备的麦克风/内录音频推给 Mac 进行 ASR）
+    toggleAudioBtn.addEventListener('click', async () => {
+      if (!isStreamingAudio) {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+          audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          const source = audioContext.createMediaStreamSource(mediaStream);
+          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+          processor.onaudioprocess = (e) => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            // 转换为 16-bit PCM 二进制发送
+            const pcmBuffer = new ArrayBuffer(inputData.length * 2);
+            const view = new DataView(pcmBuffer);
+            for (let i = 0; i < inputData.length; i++) {
+              let s = Math.max(-1, Math.min(1, inputData[i]));
+              view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            ws.send(pcmBuffer);
+          };
+
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+
+          isStreamingAudio = true;
+          toggleAudioBtn.classList.add('active');
+          toggleAudioBtn.innerText = '🔴 正在推流音频';
+        } catch (err) {
+          alert('无法启动音频录制: ' + err.message);
+        }
+      } else {
+        if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+        if (audioContext) audioContext.close();
+        isStreamingAudio = false;
+        toggleAudioBtn.classList.remove('active');
+        toggleAudioBtn.innerText = '🎙️ 本机音频推流';
+      }
+    });
+
+    // 字体调节
+    fontSizeBtn.addEventListener('click', () => {
+      currentFontSizeIndex = (currentFontSizeIndex + 1) % fontSizes.length;
+      document.querySelectorAll('.translated-line').forEach(el => {
+        el.style.fontSize = fontSizes[currentFontSizeIndex];
+      });
+    });
+
+    // 透明背景调节
+    opacityBtn.addEventListener('click', () => {
+      isTransparent = !isTransparent;
+      document.body.style.backgroundColor = isTransparent ? 'rgba(0, 0, 0, 0.15)' : 'rgba(10, 10, 14, 0.92)';
+      opacityBtn.classList.toggle('active', isTransparent);
+    });
+
+    connectWs();
+  </script>
+</body>
+</html>

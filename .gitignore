@@ -1,0 +1,16 @@
+# Rust target output
+/target/
+**/*.rs.bk
+
+# Large model files (downloaded via download_model.sh)
+/models/
+*.tar.bz2
+*.onnx
+
+# Logs
+*.log
+*.error.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
