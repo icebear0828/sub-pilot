@@ -47,11 +47,11 @@ pub fn create_sense_voice_recognizer(
 pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
     let silero_vad = SileroVadModelConfig {
         model: Some(vad_path.to_string()),
-        threshold: 0.6,
-        min_silence_duration: 0.75, // 0.75 秒完整停顿才视为句尾，绝不在换气或短暂停顿时将句子切碎！
-        min_speech_duration: 0.35,  // 0.35 秒以下过滤，彻底消除碎片杂音和残破尾缀
+        threshold: 0.55,
+        min_silence_duration: 0.45, // 0.45 秒精简静音确认期：尾音刚落即刻触发结算，大幅缩短等待延迟
+        min_speech_duration: 0.25,  // 0.25 秒短语音过滤
         window_size: 512,
-        max_speech_duration: 10.0,  // 单句最长 10 秒强制切片，保障完整语义
+        max_speech_duration: 5.0,   // 最长 5 秒强制切句上屏，长难句绝不憋好几秒
     };
 
     let mut config = VadModelConfig::default();
@@ -284,8 +284,8 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
                         while !vad.is_empty() {
                             if let Some(segment) = vad.front() {
                                 let samples = segment.samples();
-                                // 过滤短于 0.5 秒或过短杂音段 (8000 个采样点)，绝不吐出 "ed."、"not." 等残破碎词！
-                                if samples.len() >= 8000 {
+                                // 处理大于 0.25 秒的有效语音段 (4000 个采样点)，让短语/单句瞬间触发响应
+                                if samples.len() >= 4000 {
                                     if let Some(ref rec) = current_recognizer {
                                         let start = std::time::Instant::now();
                                         let stream = rec.create_stream();

@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 use crate::SharedState;
 
 const TARGET_RATE: f64 = 16_000.0;
-const PCM_CHUNK_BYTES: usize = 9_600;
+const PCM_CHUNK_BYTES: usize = 3_200; // 3200 字节 = 1600 采样点 = 100ms 极低延迟音频包
 
 // ── 音频会话信息（暴露给前端）────────────────────────────────────────────────
 
