@@ -276,6 +276,11 @@
     // 本机音频推流（将当前设备的麦克风/内录音频推给 Mac 进行 ASR）
     toggleAudioBtn.addEventListener('click', async () => {
       if (!isStreamingAudio) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          const httpsUrl = 'https://' + window.location.hostname + ':8766/';
+          alert('当前浏览器禁止在非安全 HTTP 页面录音。\n\n请直接访问 HTTPS 加密通道以启用麦克风：\n' + httpsUrl);
+          return;
+        }
         try {
           mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
           audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });

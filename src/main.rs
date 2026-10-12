@@ -1,4 +1,7 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
+use axum_server::tls_rustls::RustlsConfig;
+use rcgen::generate_simple_self_signed;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -167,16 +170,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or_else(|_| "8765".to_string());
-    let bind_addr = format!("{host}:{port}");
+    let http_addr: SocketAddr = format!("{host}:{port}").parse()?;
 
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    // 生成局域网通用的自签名 TLS 证书（使手机/其他设备浏览器能够直接解锁 getUserMedia 录音权限）
+    let san = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        host.clone(),
+        "sub-pilot.local".to_string(),
+    ];
+    let cert_key = generate_simple_self_signed(san).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let cert_pem = cert_key.cert.pem().into_bytes();
+    let key_pem = cert_key.signing_key.serialize_pem().into_bytes();
+    let tls_config = RustlsConfig::from_pem(cert_pem, key_pem).await?;
+
+    let https_port = std::env::var("HTTPS_PORT").unwrap_or_else(|_| "8766".to_string());
+    let https_addr: SocketAddr = format!("{host}:{https_port}").parse()?;
+
     println!("============================================================");
-    println!("📡 Sub-Pilot ASR + 翻译 API 服务已启动: http://{bind_addr}");
-    println!("🔹 WebSocket 流式 API: ws://{bind_addr}/v1/audio/stream");
-    println!("🔹 OpenAI 兼容转写 API: http://{bind_addr}/v1/audio/transcriptions");
+    println!("📡 Sub-Pilot ASR + 翻译服务已就绪！");
+    println!("🔒 HTTPS 安全通道 (推荐其他电脑/手机录音访问): https://{https_addr}");
+    println!("🌐 HTTP 普通通道 (本机访问): http://{http_addr}");
+    println!("🔹 WebSocket 流式 API: wss://{https_addr}/ws 或 ws://{http_addr}/ws");
     println!("============================================================");
 
-    axum::serve(listener, app).await?;
+    let app_http = app.clone();
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
+        axum::serve(listener, app_http).await.unwrap();
+    });
+
+    axum_server::bind_rustls(https_addr, tls_config)
+        .serve(app.into_make_service())
+        .await?;
+
     Ok(())
 }
 

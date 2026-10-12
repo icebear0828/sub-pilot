@@ -14,4 +14,6 @@ reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 sherpa-onnx = "1.13.8"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+rcgen = "0.14.10"
 
