@@ -463,14 +463,18 @@ fn update_subtitle(state: &Arc<SharedState>, client: &reqwest::Client, text: &st
 
     // 纯 ASR 模式：不调用大模型，翻译行直接同步原文
     if !is_translate_enabled {
+        // 如果是中间草稿 (is_final == false)，直接丢弃，绝不上屏跳动！
+        if !subtitle.is_final {
+            return;
+        }
         subtitle.translated = source.clone();
         state.update_source_text(subtitle);
         return;
     }
 
-    // 1. 如果还在说话中 (is_final == false)，属于流式打字机草稿态，立即刷新原文，绝不请求大模型！
+    // 1. 中间打字机草稿 (is_final == false)：
+    // 直接丢弃！绝不让未定稿的内容在屏幕上疯狂跳变，确保视线绝对稳定！
     if !subtitle.is_final {
-        state.update_source_text(subtitle);
         return;
     }
 

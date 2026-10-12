@@ -517,23 +517,20 @@
             translateToggle.value = String(snap.translationEnabled);
           }
 
-          // 字幕渲染
-          if (snap.subtitle) {
+          // 字幕渲染 (定稿稳定呈现，绝不横跳)
+          if (snap.subtitle && snap.subtitle.text) {
             const sub = snap.subtitle;
             const lang = (sub.language || snap.language || 'AUTO').toUpperCase();
             langBadge.innerText = lang;
 
-            const isPartial = sub.isFinal === false || sub.stage === 'partial';
-            const cursorHtml = isPartial ? '<span class="cursor-blink">▎</span>' : '';
+            // 原文行直接显示定稿原文，绝不带闪烁半成品
+            originalText.innerText = sub.text;
 
-            originalText.innerHTML = (sub.text || '等待原文...') + cursorHtml;
-
+            // 译文行：有翻译显示翻译，没翻译显示原文，绝不跳“正在输入”等干扰词
             if (sub.translated) {
               translatedText.innerText = sub.translated;
-            } else if (isPartial) {
-              translatedText.innerText = '正在实时输入...';
-            } else {
-              translatedText.innerText = sub.text || '等待音频接入...';
+            } else if (sub.text) {
+              translatedText.innerText = sub.text;
             }
           }
         }
