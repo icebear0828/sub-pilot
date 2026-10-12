@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   # ─────────────────────────────────────────────────────────────
-  # 1. 编译客户端桌面应用 (Tauri v2 - Windows .msi/.exe & macOS .dmg/.app)
+  # 1. 编译客户端桌面应用 (Tauri v2 - Windows .exe & macOS .dmg/.app)
   # ─────────────────────────────────────────────────────────────
   build-client:
     strategy:
@@ -22,8 +22,6 @@ jobs:
             args: '--bundles nsis'
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin --bundles dmg,app'
-          - platform: 'macos-13'
-            args: '--target x86_64-apple-darwin --bundles dmg,app'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -33,7 +31,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || (matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '') }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -55,7 +53,7 @@ jobs:
       - name: Upload Client Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: client-${{ matrix.platform }}-${{ strategy.job-index }}
+          name: client-${{ matrix.platform }}
           path: |
             client/target/**/bundle/nsis/*.exe
             client/target/**/bundle/dmg/*.dmg
@@ -75,9 +73,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: sub-pilot-macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact_name: sub-pilot-macos-x86_64
 
     runs-on: ${{ matrix.os }}
     steps:
