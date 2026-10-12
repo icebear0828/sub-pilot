@@ -542,8 +542,9 @@
               originalText.innerText = sub.text;
             }
 
-            // 译文行：有翻译显示翻译，没翻译保持上一句译文或显示原文；译文更新时带轻微平滑过渡
-            const newTrans = sub.translated || sub.text;
+            // 译文行：有翻译显示翻译；若新一句翻译还在生成中，继续平滑展示上一句译文，绝不降级回跳成外语原文！
+            const isChinese = lang === 'ZH' || lang === 'YUE';
+            const newTrans = isChinese ? sub.text : sub.translated;
             if (newTrans && translatedText.innerText !== newTrans) {
               translatedText.innerText = newTrans;
               translatedText.classList.remove('fade-update');

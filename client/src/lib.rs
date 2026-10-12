@@ -537,48 +537,42 @@ async fn translate_text(client: &reqwest::Client, source: &str) -> String {
 }
 
 /// 解析 ASR 消息：
+/// 服务端采用 SenseVoice + 神经翻译双阶段推流：
 /// 1. 若为说话中的打字机增量（is_final == false）：
-///    采用 LCP 最长公共前缀锁定算法，锁死已经确定的前缀字，只单向往前生长打字，零回弹、零闪烁！
-/// 2. 若为原音定稿（is_final == true）：
-///    结算当前句子，保留译文平滑过渡，并异步启动翻译。
-fn update_subtitle(state: &Arc<SharedState>, client: &reqwest::Client, text: &str) {
-    let Ok(mut subtitle) = serde_json::from_str::<Subtitle>(text) else {
+///    采用 LCP 最长公共前缀锁定，只单向往前生长打字。
+/// 2. 若为原音定稿（stage == "asr"）：
+///    更新原文，保留当前屏幕译文平滑过渡，等待服务端几百毫秒后的成熟译文。
+/// 3. 若为意译完成（stage == "trans"）：
+///    直接采纳服务端优质译文，单向切换！彻底杜绝客户端重复发起翻译造成的来回横跳！
+fn update_subtitle(state: &Arc<SharedState>, _client: &reqwest::Client, text: &str) {
+    let Ok(subtitle) = serde_json::from_str::<Subtitle>(text) else {
         return;
     };
 
     let is_translate_enabled = state.translation_enabled.load(Ordering::Relaxed);
 
-    // 1. 说话中的流式增量打字 (is_final == false)
+    // 1. 说话中的流式打字草稿
     if !subtitle.is_final {
         state.update_partial_lcp(&subtitle.text, &subtitle.language);
         return;
     }
 
-    // 2. 纯 ASR 模式下的定稿 (用户关闭了翻译)
+    // 2. 纯 ASR 模式 (用户关闭了翻译)
     if !is_translate_enabled {
-        let source = subtitle.text.clone();
-        subtitle.translated = source;
-        state.commit_final_text(subtitle);
+        let mut sub = subtitle;
+        sub.translated = sub.text.clone();
+        state.commit_final_text(sub);
         return;
     }
 
-    // 3. 服务端已完成意译推流 (stage == "trans")
+    // 3. 服务端已完成意译 (stage == "trans")
     if subtitle.stage == "trans" && !subtitle.translated.is_empty() {
         state.commit_final_text(subtitle);
         return;
     }
 
-    // 4. 句子停顿定稿 (is_final == true && stage == "asr")
-    let source = subtitle.text.clone();
-    let version = state.commit_final_text(subtitle);
-
-    // 异步请求翻译，绝不阻塞录音和 ASR 管道
-    let state_clone = state.clone();
-    let client_clone = client.clone();
-    tauri::async_runtime::spawn(async move {
-        let translated = translate_text(&client_clone, &source).await;
-        state_clone.update_translated_text(version, translated);
-    });
+    // 4. 原音定稿 (stage == "asr")：更新定稿原文，保留当前译文平滑过渡
+    state.commit_final_text(subtitle);
 }
 
 
