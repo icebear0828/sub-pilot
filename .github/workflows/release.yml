@@ -1,0 +1,133 @@
+name: "Release Sub-Pilot & Subtitle HUD"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. 编译客户端桌面应用 (Tauri v2 - Windows .msi/.exe & macOS .dmg/.app)
+  # ─────────────────────────────────────────────────────────────
+  build-client:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            args: ''
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-13'
+            args: '--target x86_64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || (matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '') }}
+
+      - name: Install Node.js (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Build Tauri Client Artifacts
+        working-directory: ./client
+        run: cargo tauri build ${{ matrix.args }}
+
+      - name: Upload Client Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.platform }}
+          path: |
+            client/target/**/bundle/msi/*.msi
+            client/target/**/bundle/nsis/*.exe
+            client/target/**/bundle/dmg/*.dmg
+            client/target/**/bundle/macos/*.app.tar.gz
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. 编译服务端引擎二进制 (Sub-Pilot - Linux & macOS)
+  # ─────────────────────────────────────────────────────────────
+  build-server:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: sub-pilot-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: sub-pilot-macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: sub-pilot-macos-x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build Server Binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/sub-pilot dist/${{ matrix.artifact_name }}
+          chmod +x dist/${{ matrix.artifact_name }}
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. 汇总发布 GitHub Release
+  # ─────────────────────────────────────────────────────────────
+  create-release:
+    needs: [build-client, build-server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten and organize release files
+        shell: bash
+        run: |
+          mkdir -p upload
+          find release-assets -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" -o -name "*.tar.gz" -o -name "sub-pilot-*" \) -exec cp {} upload/ \;
+          ls -la upload/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: upload/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

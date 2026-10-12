@@ -1,5 +1,6 @@
 # Rust target output
-/target/
+target/
+**/target/
 **/*.rs.bk
 
 # Large model files (downloaded via download_model.sh)

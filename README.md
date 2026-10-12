@@ -19,8 +19,11 @@
 - 📡 **双协议 API 接口**：
   - **WebSocket 流式推流 API** (`/v1/audio/stream`)：全双工裸 PCM 音频流推流，毫秒级回传双语字幕。
   - **OpenAI 兼容 REST API** (`/v1/audio/transcriptions`)：标准 Multipart 接口，直接兼容各类现有三方字幕软件与播放器插件。
-- 🖥️ **内置轻量响应式 Web 悬浮端**：
-  - 单文件二进制内嵌纯静态 HTML5/CSS3 字幕页，局域网内的 iPad / 手机 / 电脑浏览器打开即用。
+- 🖥️ **B/S 双模架构 (内置 WebUI + 原生桌面置顶 HUD)**：
+  - **Browser (B端)**：后端单二进制内嵌纯静态 HTML5/CSS3 字幕页，局域网内的 iPad / 手机 / 电脑浏览器直接打开即用。
+  - **Client (C端)**：集成基于 **Tauri v2** 构建的高性能跨平台置顶字幕 HUD (`client/`)，支持 Windows WASAPI 独立进程级声卡内录、全局混音与 F8 快捷键鼠标穿透。
+- 📦 **全自动化 CI/CD 发版流水线**：
+  - GitHub Actions 矩阵编译：一键生成 Windows (`.msi` / `.exe`) 与 macOS (`.dmg` / `.app`) 原生客户端安装包以及服务端全架构二进制。
 
 ---
 
