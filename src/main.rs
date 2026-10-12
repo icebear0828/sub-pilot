@@ -13,9 +13,51 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use sherpa_onnx::{
     OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
+    SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
 };
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
+
+pub fn create_sense_voice_recognizer(
+    model_path: &str,
+    tokens_path: &str,
+    language: Option<&str>,
+) -> Option<OfflineRecognizer> {
+    let sense_voice_cfg = OfflineSenseVoiceModelConfig {
+        model: Some(model_path.to_string()),
+        language: language.map(|s| s.to_string()),
+        use_itn: true,
+    };
+
+    let mut model_cfg = OfflineModelConfig::default();
+    model_cfg.sense_voice = sense_voice_cfg;
+    model_cfg.tokens = Some(tokens_path.to_string());
+    model_cfg.num_threads = 4;
+    model_cfg.debug = false;
+
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config = model_cfg;
+
+    OfflineRecognizer::create(&config)
+}
+
+pub fn create_vad_detector(vad_path: &str) -> Option<VoiceActivityDetector> {
+    let silero_vad = SileroVadModelConfig {
+        model: Some(vad_path.to_string()),
+        threshold: 0.5,
+        min_silence_duration: 0.35, // 0.35 秒静音视为自然断句
+        min_speech_duration: 0.25,  // 忽略 0.25 秒以下的杂音
+        window_size: 512,
+        max_speech_duration: 6.0,   // 单句最长 6 秒切片
+    };
+
+    let mut config = VadModelConfig::default();
+    config.silero_vad = silero_vad;
+    config.sample_rate = 16000;
+    config.num_threads = 2;
+
+    VoiceActivityDetector::create(&config, 30.0)
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SubtitlePayload {
@@ -32,10 +74,18 @@ pub struct OpenAIResponse {
 }
 
 #[derive(Clone)]
+pub struct ModelPaths {
+    pub model_path: String,
+    pub tokens_path: String,
+    pub vad_path: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct AppState {
     pub tx: broadcast::Sender<SubtitlePayload>,
     pub recognizer: Option<Arc<OfflineRecognizer>>,
     pub http_client: reqwest::Client,
+    pub model_paths: Option<ModelPaths>,
 }
 
 #[tokio::main]
@@ -71,33 +121,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let mut model_paths = None;
     let recognizer = if let Some((model_p, tokens_p)) = found_model {
-        println!("🚀 正在初始化 SenseVoice-Small ASR 原生引擎: {model_p}...");
-        let sense_voice_cfg = OfflineSenseVoiceModelConfig {
-            model: Some(model_p),
-            language: None, // 自动检测多语种
-            use_itn: true,
+        let parent_dir = std::path::Path::new(&model_p).parent().unwrap();
+        let vad_candidate = parent_dir.join("silero_vad.onnx");
+        let vad_path = if vad_candidate.exists() {
+            Some(vad_candidate.to_string_lossy().to_string())
+        } else {
+            None
         };
 
-        let mut model_cfg = OfflineModelConfig::default();
-        model_cfg.sense_voice = sense_voice_cfg;
-        model_cfg.tokens = Some(tokens_p);
-        model_cfg.num_threads = 4;
-        model_cfg.debug = false;
+        model_paths = Some(ModelPaths {
+            model_path: model_p.clone(),
+            tokens_path: tokens_p.clone(),
+            vad_path,
+        });
 
-        let mut config = OfflineRecognizerConfig::default();
-        config.model_config = model_cfg;
-
-        match OfflineRecognizer::create(&config) {
-            Some(rec) => {
-                println!("✅ SenseVoice 引擎加载完毕，准备提供 API 服务！");
-                Some(Arc::new(rec))
-            }
-            None => {
-                eprintln!("⚠️ 加载 ASR 引擎失败。");
-                None
-            }
-        }
+        println!("🚀 正在初始化 SenseVoice-Small ASR 原生引擎: {model_p}...");
+        create_sense_voice_recognizer(&model_p, &tokens_p, None).map(Arc::new)
     } else {
         println!("ℹ️ 未在默认路径检测到 SenseVoice 模型。请运行 ./download_model.sh 或设置 MODEL_DIR 环境变量。");
         None
@@ -109,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap_or_default();
 
-    let state = AppState { tx, recognizer, http_client };
+    let state = AppState { tx, recognizer, http_client, model_paths };
 
     let app = Router::new()
         // 0. 内置轻量实时字幕 WebUI（方便手机/iPad/电脑无安装使用）
@@ -168,59 +209,121 @@ async fn handle_ws_client(socket: WebSocket, state: AppState) {
         }
     });
 
-    // 上行通道：接收客户端推流上来的 PCM 二进制音频
-    let recognizer = state.recognizer.clone();
+    // 上行通道：接收客户端推流上来的 PCM 二进制音频，并支持动态语言控制
     let tx = state.tx.clone();
     let http_client = state.http_client.clone();
+    let model_paths = state.model_paths.clone();
+
+    // 每个连接维护独立的 Recognizer 与 VAD 状态，允许客户端独立锁定语种
+    let mut current_lang: Option<String> = None;
+    let mut current_recognizer = state.recognizer.clone();
+    let mut vad_detector = model_paths.as_ref().and_then(|p| {
+        p.vad_path.as_ref().and_then(|vad_p| create_vad_detector(vad_p))
+    });
 
     let mut recv_task = tokio::spawn(async move {
-        let mut audio_buffer: Vec<f32> = Vec::with_capacity(16000 * 2);
+        let mut audio_buffer: Vec<f32> = Vec::with_capacity(16000 * 4);
 
         while let Some(Ok(msg)) = receiver.next().await {
             match msg {
                 Message::Binary(bytes) => {
-                    // 假设客户端发送的是 16kHz 16-bit Mono PCM
+                    // 接收 16kHz 16-bit Mono PCM
                     let sample_count = bytes.len() / 2;
+                    let mut chunk: Vec<f32> = Vec::with_capacity(sample_count);
                     for i in 0..sample_count {
                         let sample_i16 = i16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-                        audio_buffer.push(sample_i16 as f32 / 32768.0);
+                        chunk.push(sample_i16 as f32 / 32768.0);
                     }
 
-                    // 积攒满 0.6 ~ 0.8 秒（约 10000 个采样点）即触发推理
-                    if audio_buffer.len() >= 10000 {
-                        if let Some(ref rec) = recognizer {
-                            let start = std::time::Instant::now();
-                            let stream = rec.create_stream();
-                            stream.accept_waveform(16000, &audio_buffer);
-                            rec.decode(&stream);
+                    // 【阶段 2：VAD 自然语音分块】
+                    if let Some(ref mut vad) = vad_detector {
+                        vad.accept_waveform(&chunk);
 
-                            if let Some(result) = stream.get_result() {
-                                let raw_text = result.text.trim();
-                                if !raw_text.is_empty() {
-                                    let (lang, clean_text) = parse_sense_voice_text(raw_text);
+                        while !vad.is_empty() {
+                            if let Some(segment) = vad.front() {
+                                let samples = segment.samples();
+                                // 只处理大于 0.4 秒的有效语音段，过滤短促杂音
+                                if samples.len() >= 6400 {
+                                    if let Some(ref rec) = current_recognizer {
+                                        let start = std::time::Instant::now();
+                                        let stream = rec.create_stream();
+                                        stream.accept_waveform(16000, samples);
+                                        rec.decode(&stream);
 
-                                    // 自动极速翻译为地道中文（中文则不重复翻译）
-                                    let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
-                                    let latency = start.elapsed().as_millis();
+                                        if let Some(result) = stream.get_result() {
+                                            let raw_text = result.text.trim();
+                                            if !raw_text.is_empty() {
+                                                // 【阶段 1 & 3：结合锁定语种与字符集二次校验纠偏】
+                                                let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
+                                                let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
+                                                let latency = start.elapsed().as_millis();
 
-                                    let payload = SubtitlePayload {
-                                        text: clean_text,
-                                        translated,
-                                        language: lang,
-                                        latency_ms: latency,
-                                    };
-
-                                    let _ = tx.send(payload);
+                                                let payload = SubtitlePayload {
+                                                    text: clean_text,
+                                                    translated,
+                                                    language: lang,
+                                                    latency_ms: latency,
+                                                };
+                                                let _ = tx.send(payload);
+                                            }
+                                        }
+                                    }
                                 }
                             }
+                            vad.pop();
                         }
-                        audio_buffer.clear();
+                    } else {
+                        // 若未安装 VAD 模型，使用高抗噪动态平滑分块（1.2 秒最小聚合，彻底消除 0.5s 短断句误判）
+                        audio_buffer.extend_from_slice(&chunk);
+                        if audio_buffer.len() >= 19200 { // 1.2 秒
+                            if let Some(ref rec) = current_recognizer {
+                                let start = std::time::Instant::now();
+                                let stream = rec.create_stream();
+                                stream.accept_waveform(16000, &audio_buffer);
+                                rec.decode(&stream);
+
+                                if let Some(result) = stream.get_result() {
+                                    let raw_text = result.text.trim();
+                                    if !raw_text.is_empty() {
+                                        let (lang, clean_text) = parse_sense_voice_text(raw_text, current_lang.as_deref());
+                                        let translated = translate_to_chinese(&http_client, &clean_text, &lang).await;
+                                        let latency = start.elapsed().as_millis();
+
+                                        let payload = SubtitlePayload {
+                                            text: clean_text,
+                                            translated,
+                                            language: lang,
+                                            latency_ms: latency,
+                                        };
+                                        let _ = tx.send(payload);
+                                    }
+                                }
+                            }
+                            audio_buffer.clear();
+                        }
                     }
                 }
                 Message::Text(txt) => {
-                    // 支持客户端以 JSON 发送控制信号
-                    if txt == "ping" {
-                        // 心跳保活
+                    // 支持客户端以 JSON 发送控制信号（动态切换语种）
+                    if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        if let Some(action) = cmd.get("action").and_then(|v| v.as_str()) {
+                            if action == "set_language" {
+                                if let Some(lang_code) = cmd.get("language").and_then(|v| v.as_str()) {
+                                    println!("🌐 客户端请求切换识别语种: {lang_code}");
+                                    if lang_code == "auto" {
+                                        current_lang = None;
+                                        if let Some(ref paths) = model_paths {
+                                            current_recognizer = create_sense_voice_recognizer(&paths.model_path, &paths.tokens_path, None).map(Arc::new);
+                                        }
+                                    } else {
+                                        current_lang = Some(lang_code.to_string());
+                                        if let Some(ref paths) = model_paths {
+                                            current_recognizer = create_sense_voice_recognizer(&paths.model_path, &paths.tokens_path, Some(lang_code)).map(Arc::new);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -271,7 +374,7 @@ async fn openai_transcriptions_handler(
     rec.decode(&stream);
 
     if let Some(res) = stream.get_result() {
-        let (lang, clean_text) = parse_sense_voice_text(&res.text);
+        let (lang, clean_text) = parse_sense_voice_text(&res.text, None);
         Ok(Json(OpenAIResponse {
             text: clean_text,
             language: lang,
@@ -284,9 +387,9 @@ async fn openai_transcriptions_handler(
     }
 }
 
-/// 解析 SenseVoice 输出标签与 Unicode 字符集，精准提取语言代码和纯文本
-fn parse_sense_voice_text(text: &str) -> (String, String) {
-    let mut detected_lang: Option<String> = None;
+/// 解析 SenseVoice 输出标签与 Unicode 字符集，结合目标语言与兜底纠偏，精准提取真实语言代码和纯文本
+fn parse_sense_voice_text(text: &str, target_lang: Option<&str>) -> (String, String) {
+    let mut detected_tag: Option<String> = None;
     let mut clean_text = String::new();
 
     // 1. 尝试从 SenseVoice 内置标签提取: <|zh|>, <|en|>, <|ja|>, <|ko|>, <|yue|>
@@ -295,7 +398,7 @@ fn parse_sense_voice_text(text: &str) -> (String, String) {
         if let Some(tag_content) = part.split("<|").nth(1) {
             match tag_content {
                 "zh" | "en" | "ja" | "ko" | "yue" => {
-                    detected_lang = Some(tag_content.to_string());
+                    detected_tag = Some(tag_content.to_string());
                 }
                 _ => {}
             }
@@ -308,20 +411,47 @@ fn parse_sense_voice_text(text: &str) -> (String, String) {
         clean_text = text.to_string();
     }
 
-    // 2. 如果标签未携带语言代码，通过字符集高精度自适应判定
-    let lang = if let Some(l) = detected_lang {
-        l
-    } else {
-        let has_kana = clean_text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c));
-        let has_hangul = clean_text.chars().any(|c| ('\u{AC00}'..='\u{D7AF}').contains(&c) || ('\u{1100}'..='\u{11FF}').contains(&c));
-        let has_han = clean_text.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c));
-        let latin_count = clean_text.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    // 2. 核心字符集特征提取 (平假名、片假名、韩文字母、汉字、英文拉丁字母)
+    let has_kana = clean_text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c));
+    let has_hangul = clean_text.chars().any(|c| ('\u{AC00}'..='\u{D7AF}').contains(&c) || ('\u{1100}'..='\u{11FF}').contains(&c));
+    let latin_count = clean_text.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    let han_count = clean_text.chars().filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c)).count();
 
+    // 3. 【阶段3：字符集二次校验与强制纠偏兜底】
+    let final_lang = if let Some(target) = target_lang {
+        // 如果客户端明确锁定了目标语种（例如专心追日漫 / 听英文课）
+        match target {
+            "ja" | "en" | "ko" | "zh" | "yue" => target.to_string(),
+            _ => {
+                if has_kana {
+                    "ja".to_string()
+                } else if has_hangul {
+                    "ko".to_string()
+                } else if latin_count > 0 && latin_count >= han_count {
+                    "en".to_string()
+                } else {
+                    detected_tag.unwrap_or_else(|| "zh".to_string())
+                }
+            }
+        }
+    } else {
+        // 自动模式下的强力纠偏：
+        // 规则 A：只要文本中包含日文假名，哪怕模型误打了 <|zh|> 标签，也无条件纠正为 "ja"！
         if has_kana {
             "ja".to_string()
         } else if has_hangul {
             "ko".to_string()
-        } else if has_han {
+        } else if latin_count > 0 && latin_count > han_count * 2 {
+            // 规则 B：拉丁字母数量明显占据主导地位，纠正为 "en"
+            "en".to_string()
+        } else if let Some(tag) = detected_tag {
+            // 规则 C：如果打着 zh 标签但完全没有汉字且全是英文字母，纠正为 "en"
+            if tag == "zh" && han_count == 0 && latin_count > 0 {
+                "en".to_string()
+            } else {
+                tag
+            }
+        } else if han_count > 0 {
             "zh".to_string()
         } else if latin_count > 0 {
             "en".to_string()
@@ -330,7 +460,7 @@ fn parse_sense_voice_text(text: &str) -> (String, String) {
         }
     };
 
-    (lang, clean_text)
+    (final_lang, clean_text)
 }
 
 /// 自动将外语极速翻译为地道简体中文；若是中文则返回空字符串，彻底防止双语中文重复！
