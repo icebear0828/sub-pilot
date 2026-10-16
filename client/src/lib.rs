@@ -18,25 +18,34 @@ use crate::db::{SessionRecord, UtteranceRecord};
 use crate::export::{ExportOptions, Exporter};
 use crate::state::{AppState, AppStatusDto, CaptureMode};
 
-fn find_model_dir() -> PathBuf {
-    let candidates = [
+fn find_model_dir(data_dir: &PathBuf) -> PathBuf {
+    let mut candidates = vec![
         std::env::var("MODEL_DIR").unwrap_or_default(),
+        data_dir.join("models").to_string_lossy().to_string(),
+        data_dir.join("models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17").to_string_lossy().to_string(),
         "../models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
         "/Users/yutao/llm/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
         "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
         "./models".to_string(),
     ];
 
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("models").to_string_lossy().to_string());
+            candidates.push(parent.join("models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17").to_string_lossy().to_string());
+        }
+    }
+
     for path_str in &candidates {
         if path_str.is_empty() {
             continue;
         }
         let p = PathBuf::from(path_str);
-        if p.exists() && p.join("silero_vad.onnx").exists() {
+        if p.exists() && (p.join("silero_vad.onnx").exists() || p.join("model.int8.onnx").exists()) {
             return p;
         }
     }
-    PathBuf::from("./models")
+    data_dir.join("models")
 }
 
 fn get_data_dir() -> PathBuf {
@@ -107,6 +116,21 @@ fn toggle_silent_mode(
 #[tauri::command]
 fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
     AudioEngineHandle::list_input_devices().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn start_recording(
+    device_name: Option<String>,
+    engine: State<'_, AudioEngineHandle>,
+) -> Result<(), String> {
+    engine.start_capture(device_name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn stop_recording(
+    engine: State<'_, AudioEngineHandle>,
+) -> Result<(), String> {
+    engine.stop_capture().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -285,12 +309,32 @@ fn open_data_directory(state: State<Arc<AppState>>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_model_directory(state: State<Arc<AppState>>) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(&state.model_dir);
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&state.model_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&state.model_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── Application Entry ─────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir = get_data_dir();
-    let model_dir = find_model_dir();
+    let model_dir = find_model_dir(&data_dir);
 
     println!("📂 VoiceForge Mini Data Dir: {:?}", data_dir);
     println!("🤖 VoiceForge Mini Model Dir: {:?}", model_dir);
@@ -301,17 +345,14 @@ pub fn run() {
     );
 
     let audio_engine = AudioEngineHandle::new((*state).clone());
-    // Auto start default input capture
-    let engine_clone = audio_engine.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = engine_clone.start_capture(None).await;
-    });
 
     tauri::Builder::default()
         .manage(state)
         .manage(audio_engine)
         .invoke_handler(tauri::generate_handler![
             get_app_status,
+            start_recording,
+            stop_recording,
             set_capture_mode,
             toggle_mute,
             toggle_silent_mode,
@@ -331,6 +372,7 @@ pub fn run() {
             start_dragging,
             close_window,
             open_data_directory,
+            open_model_directory,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VoiceForge Mini");

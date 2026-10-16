@@ -36,6 +36,12 @@ impl AudioEngineHandle {
 
         // Run audio thread on dedicated OS thread to isolate cpal::Stream (!Send on macOS CoreAudio)
         std::thread::spawn(move || {
+            #[cfg(windows)]
+            unsafe {
+                use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+
             let mut current_stream: Option<Stream> = None;
             let mut stop_pipeline_tx: Option<mpsc::Sender<()>> = None;
 
@@ -53,9 +59,15 @@ impl AudioEngineHandle {
                                 let _ = stream.play();
                                 current_stream = Some(stream);
                                 stop_pipeline_tx = Some(tx);
+                                state.is_capturing.store(true, Ordering::SeqCst);
+                                *state.last_error.lock().unwrap() = None;
+                                *state.mic_status.lock().unwrap() = MicStatus::Listening;
                             }
                             Err(e) => {
-                                eprintln!("Failed to start microphone stream: {:?}", e);
+                                let err_msg = format!("无法打开麦克风: {}", e);
+                                eprintln!("{}", err_msg);
+                                *state.last_error.lock().unwrap() = Some(err_msg);
+                                state.is_capturing.store(false, Ordering::SeqCst);
                                 *state.mic_status.lock().unwrap() = MicStatus::Idle;
                             }
                         }
@@ -67,6 +79,7 @@ impl AudioEngineHandle {
                         if let Some(stream) = current_stream.take() {
                             let _ = stream.pause();
                         }
+                        state.is_capturing.store(false, Ordering::SeqCst);
                         *state.mic_status.lock().unwrap() = MicStatus::Idle;
                     }
                 }
@@ -77,6 +90,12 @@ impl AudioEngineHandle {
     }
 
     pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>> {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+
         let host = cpal::default_host();
         let default_name = host.default_input_device().and_then(|d| d.name().ok());
         let devices = host.input_devices().context("Failed to get input devices")?;
@@ -110,6 +129,12 @@ fn setup_input_stream(
     state: &AppState,
     device_name: Option<&str>,
 ) -> Result<(Stream, mpsc::Sender<()>)> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+
     let host = cpal::default_host();
     let device = if let Some(name) = device_name {
         host.input_devices()?

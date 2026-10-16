@@ -7,7 +7,7 @@
   <style>
     :root {
       --bg-dark: #0e1117;
-      --bg-panel: rgba(22, 27, 34, 0.88);
+      --bg-panel: rgba(22, 27, 34, 0.92);
       --bg-card: #161b22;
       --border-color: rgba(255, 255, 255, 0.12);
       --border-subtle: rgba(255, 255, 255, 0.06);
@@ -19,7 +19,6 @@
       --danger: #f43f5e;
       --success: #10b981;
       --warning: #f59e0b;
-      --purple: #a855f7;
     }
 
     * {
@@ -41,7 +40,6 @@
       flex-direction: column;
     }
 
-    /* ─── 统一主卡片 ─── */
     .app-container {
       position: relative;
       flex: 1;
@@ -56,14 +54,14 @@
       overflow: hidden;
     }
 
-    /* ─── 顶栏（通用控制条） ─── */
+    /* ─── 顶栏控制 ─── */
     .header-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: 44px;
+      height: 48px;
       padding: 0 14px;
-      background: rgba(0, 0, 0, 0.25);
+      background: rgba(0, 0, 0, 0.35);
       border-bottom: 1px solid var(--border-subtle);
       cursor: grab;
     }
@@ -79,8 +77,8 @@
     }
 
     .brand-icon {
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       background: var(--accent-gradient);
       border-radius: 6px;
       display: flex;
@@ -94,10 +92,41 @@
     .brand-title {
       font-size: 13px;
       font-weight: 600;
-      letter-spacing: 0.3px;
-      display: flex;
+    }
+
+    /* 核心大号录音按钮 */
+    .btn-record {
+      display: inline-flex;
       align-items: center;
       gap: 6px;
+      background: var(--success);
+      color: #000;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 6px 16px;
+      border-radius: 20px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.3);
+    }
+
+    .btn-record:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 16px rgba(16, 185, 129, 0.5);
+    }
+
+    .btn-record.recording {
+      background: var(--danger);
+      color: #fff;
+      box-shadow: 0 0 16px rgba(244, 63, 94, 0.5);
+      animation: pulse-btn 1.5s infinite;
+    }
+
+    @keyframes pulse-btn {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+      100% { transform: scale(1); }
     }
 
     .status-badge {
@@ -105,32 +134,20 @@
       align-items: center;
       gap: 5px;
       font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 20px;
+      padding: 3px 8px;
+      border-radius: 12px;
       background: rgba(255, 255, 255, 0.08);
       color: var(--text-muted);
-      transition: all 0.2s;
+    }
+
+    .status-badge.listening {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
     }
 
     .status-badge.recording {
       background: rgba(244, 63, 94, 0.2);
       color: var(--danger);
-      box-shadow: 0 0 10px rgba(244, 63, 94, 0.3);
-    }
-
-    .status-badge.listening {
-      background: rgba(56, 189, 248, 0.15);
-      color: var(--accent-color);
-    }
-
-    .status-badge.muted {
-      background: rgba(245, 158, 11, 0.2);
-      color: var(--warning);
-    }
-
-    .status-badge.silent {
-      background: rgba(168, 85, 247, 0.2);
-      color: var(--purple);
     }
 
     .status-dot {
@@ -140,15 +157,6 @@
       background: currentColor;
     }
 
-    .status-badge.recording .status-dot {
-      animation: pulse 1s infinite alternate;
-    }
-
-    @keyframes pulse {
-      0% { transform: scale(0.85); opacity: 0.5; }
-      100% { transform: scale(1.25); opacity: 1; }
-    }
-
     .header-actions {
       display: flex;
       align-items: center;
@@ -156,14 +164,15 @@
       cursor: default;
     }
 
-    .mode-select {
+    .mic-select {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid var(--border-color);
       color: var(--text-main);
-      padding: 3px 8px;
+      padding: 4px 8px;
       border-radius: 6px;
       font-size: 11px;
       outline: none;
+      max-width: 150px;
       cursor: pointer;
     }
 
@@ -190,7 +199,6 @@
     .btn-icon.active {
       background: var(--accent-color);
       color: #000;
-      border-color: var(--accent-color);
     }
 
     .btn-icon.danger:hover {
@@ -198,13 +206,41 @@
       color: #fff;
     }
 
-    /* ─── 视图 A：Mini HUD 悬浮胶囊 ─── */
+    /* ─── 提示条（报错 / 模型未就绪提示） ─── */
+    .banner-alert {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 14px;
+      font-size: 11px;
+      background: rgba(245, 158, 11, 0.15);
+      border-bottom: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fde68a;
+    }
+
+    .banner-alert.error {
+      background: rgba(244, 63, 94, 0.15);
+      border-bottom-color: rgba(244, 63, 94, 0.3);
+      color: #fecdd3;
+    }
+
+    .banner-btn {
+      background: rgba(255, 255, 255, 0.15);
+      border: none;
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    /* ─── 视图 A：Mini HUD 悬浮条 ─── */
     #hud-view {
       display: flex;
       flex-direction: column;
       justify-content: center;
       padding: 12px 18px;
-      height: calc(100% - 44px);
+      height: calc(100% - 48px);
       gap: 8px;
     }
 
@@ -215,20 +251,12 @@
       gap: 14px;
     }
 
-    .level-meter-wrapper {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
     .level-bar-bg {
       flex: 1;
       height: 8px;
       background: rgba(255, 255, 255, 0.08);
       border-radius: 4px;
       overflow: hidden;
-      position: relative;
     }
 
     .level-bar-fill {
@@ -274,20 +302,11 @@
       text-overflow: ellipsis;
     }
 
-    .hud-emotion-pill {
-      font-size: 10px;
-      background: rgba(56, 189, 248, 0.15);
-      color: var(--accent-color);
-      padding: 1px 6px;
-      border-radius: 10px;
-      margin-left: 8px;
-    }
-
     /* ─── 视图 B：语料清洗工作台 ─── */
     #workbench-view {
       display: none;
       flex-direction: column;
-      height: calc(100% - 44px);
+      height: calc(100% - 48px);
       overflow: hidden;
     }
 
@@ -299,7 +318,6 @@
       background: rgba(0, 0, 0, 0.15);
       border-bottom: 1px solid var(--border-subtle);
       gap: 12px;
-      flex-wrap: wrap;
     }
 
     .stats-group {
@@ -314,32 +332,6 @@
       color: var(--text-main);
       font-size: 13px;
       margin-left: 3px;
-    }
-
-    .filter-group {
-      display: flex;
-      gap: 4px;
-      background: rgba(0, 0, 0, 0.3);
-      padding: 2px;
-      border-radius: 6px;
-      border: 1px solid var(--border-subtle);
-    }
-
-    .filter-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .filter-btn.active {
-      background: rgba(255, 255, 255, 0.12);
-      color: var(--text-main);
-      font-weight: 500;
     }
 
     .btn-action {
@@ -368,19 +360,12 @@
       font-weight: 500;
     }
 
-    .btn-action.primary:hover {
-      box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
-    }
-
     .keyboard-hint {
       padding: 6px 16px;
       background: rgba(56, 189, 248, 0.05);
       border-bottom: 1px solid var(--border-subtle);
       font-size: 11px;
       color: var(--accent-color);
-      display: flex;
-      align-items: center;
-      gap: 8px;
     }
 
     .table-container {
@@ -398,24 +383,10 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      transition: all 0.15s;
-    }
-
-    .utterance-card:hover {
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    .utterance-card.focused {
-      border-color: var(--accent-color);
-      box-shadow: 0 0 14px rgba(56, 189, 248, 0.15);
     }
 
     .utterance-card.verified {
       border-left: 3px solid var(--success);
-    }
-
-    .utterance-card.clipping {
-      border-left: 3px solid var(--danger);
     }
 
     .play-btn {
@@ -430,60 +401,22 @@
       justify-content: center;
       cursor: pointer;
       flex-shrink: 0;
-      transition: all 0.15s;
     }
 
     .play-btn:hover {
       background: var(--accent-color);
       color: #000;
-      transform: scale(1.05);
     }
 
     .card-meta {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      width: 140px;
+      width: 130px;
       flex-shrink: 0;
-    }
-
-    .card-id {
       font-size: 11px;
-      font-family: monospace;
-      color: var(--text-dim);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .card-tags {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .tag {
-      font-size: 10px;
-      padding: 1px 5px;
-      border-radius: 4px;
-      background: rgba(255, 255, 255, 0.06);
       color: var(--text-muted);
     }
 
-    .tag.clipping-tag {
-      background: rgba(244, 63, 94, 0.2);
-      color: var(--danger);
-      font-weight: 600;
-    }
-
-    .card-input-wrapper {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
     .card-text-input {
+      flex: 1;
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid var(--border-subtle);
       border-radius: 6px;
@@ -491,22 +424,12 @@
       padding: 6px 10px;
       font-size: 13px;
       outline: none;
-      width: 100%;
-      transition: border-color 0.15s;
       user-select: text;
       -webkit-user-select: text;
     }
 
     .card-text-input:focus {
       border-color: var(--accent-color);
-      background: rgba(0, 0, 0, 0.4);
-    }
-
-    .card-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
     }
 
     /* ─── 导出模态窗 ─── */
@@ -530,15 +453,9 @@
       border-radius: 12px;
       width: 480px;
       padding: 20px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
       display: flex;
       flex-direction: column;
       gap: 16px;
-    }
-
-    .modal-title {
-      font-size: 15px;
-      font-weight: 600;
     }
 
     .form-group {
@@ -563,22 +480,6 @@
       user-select: text;
       -webkit-user-select: text;
     }
-
-    .modal-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      margin-top: 8px;
-    }
-
-    /* 滚动条 */
-    ::-webkit-scrollbar {
-      width: 6px;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.15);
-      border-radius: 3px;
-    }
   </style>
 </head>
 <body>
@@ -587,40 +488,44 @@
     <div class="header-bar" id="drag-region">
       <div class="brand-section">
         <div class="brand-icon">VF</div>
-        <div class="brand-title">轻语集 (VoiceForge Mini)</div>
-        <div class="status-badge listening" id="status-badge">
+        <div class="brand-title">轻语集</div>
+
+        <!-- 显目核心录制大按钮 -->
+        <button class="btn-record" id="record-btn">▶ 开始录音</button>
+
+        <div class="status-badge" id="status-badge">
           <div class="status-dot"></div>
-          <span id="status-text">就绪</span>
+          <span id="status-text">待机空闲</span>
         </div>
       </div>
 
       <div class="header-actions">
-        <!-- 采集模式切换 -->
-        <select class="mode-select" id="mode-select" title="采集模式">
-          <option value="continuous_vad">🎙️ 连续 VAD 自动切句</option>
-          <option value="silent_deferred">🤫 静默采集（纯切片，极省资源）</option>
-          <option value="silent_realtime">⚡ 静默采集（后台实时 ASR）</option>
-          <option value="push_to_talk">🛑 按住说话 (Push-to-Talk)</option>
+        <!-- 麦克风设备切换 -->
+        <select class="mic-select" id="mic-select" title="选择录音麦克风">
+          <option value="">默认麦克风</option>
         </select>
 
-        <!-- 一键消音 (Panic Mute) -->
-        <button class="btn-icon" id="mute-btn" title="紧急物理消音 (Panic Mute)">🎙️</button>
+        <!-- 视图切换：HUD / 工作台 -->
+        <button class="btn-icon" id="view-toggle-btn" title="打开语料校对工作台">🪟</button>
 
-        <!-- 视图切换：Mini HUD / 语料工作台 -->
-        <button class="btn-icon" id="view-toggle-btn" title="切换视图模式 (HUD / 工作台)">🪟</button>
+        <!-- 打开语料文件夹 -->
+        <button class="btn-icon" id="folder-btn" title="打开本地语料库目录">📁</button>
 
-        <!-- 打开存储目录 -->
-        <button class="btn-icon" id="folder-btn" title="打开语料库文件夹">📁</button>
-
-        <!-- 最小化/隐藏 -->
-        <button class="btn-icon danger" id="close-btn" title="隐藏至托盘">×</button>
+        <!-- 隐藏至托盘 -->
+        <button class="btn-icon danger" id="close-btn" title="最小化隐藏 (后台继续录音)">×</button>
       </div>
+    </div>
+
+    <!-- 异常 / 模型状态条 -->
+    <div class="banner-alert" id="banner-alert">
+      <span id="banner-text">💡 提示：尚未检测到 SenseVoice 模型，语音将正常无损录制为 WAV 切片。</span>
+      <button class="banner-btn" id="open-model-btn">打开模型文件夹</button>
     </div>
 
     <!-- 视图 A：Mini HUD 悬浮胶囊 -->
     <div id="hud-view">
       <div class="hud-metrics">
-        <div class="level-meter-wrapper">
+        <div style="flex:1; display:flex; align-items:center; gap:8px;">
           <div class="level-bar-bg">
             <div class="level-bar-fill" id="hud-level-fill"></div>
           </div>
@@ -630,81 +535,60 @@
       </div>
 
       <div class="hud-text-preview" id="hud-preview">
-        <span id="hud-last-text">等待语音录入...</span>
-        <span class="hud-emotion-pill" id="hud-emotion-badge" style="display:none;">平静</span>
+        <span id="hud-last-text">点击顶部「▶ 开始录音」，对着麦克风说话即可自动断句切片...</span>
       </div>
     </div>
 
     <!-- 视图 B：语料清洗工作台 -->
     <div id="workbench-view">
-      <!-- 统计与操作工具栏 -->
       <div class="workbench-toolbar">
         <div class="stats-group">
-          <div class="stat-item">有效切片:<strong id="stat-count">0</strong> 条</div>
-          <div class="stat-item">总净时长:<strong id="stat-duration">00:00</strong></div>
-          <div class="stat-item">已校验:<strong id="stat-verified">0</strong></div>
-          <div class="stat-item" id="stat-pending-item">待转写:<strong id="stat-pending">0</strong></div>
+          <div>有效切片:<strong id="stat-count">0</strong> 条</div>
+          <div>总净时长:<strong id="stat-duration">00:00</strong></div>
+          <div>已校验:<strong id="stat-verified">0</strong></div>
         </div>
 
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <div class="filter-group">
-            <button class="filter-btn active" data-filter="all">全部</button>
-            <button class="filter-btn" data-filter="Pending_ASR">待转写</button>
-            <button class="filter-btn" data-filter="Transcribed">待校验</button>
-            <button class="filter-btn" data-filter="Verified">已校验</button>
-          </div>
-
-          <!-- 批量 ASR 按钮 -->
+        <div style="display:flex; gap:8px;">
           <button class="btn-action" id="batch-asr-btn">⚡ 批量转写</button>
-
-          <!-- 导出按钮 -->
           <button class="btn-action primary" id="open-export-modal-btn">📦 导出训练集</button>
         </div>
       </div>
 
       <div class="keyboard-hint">
-        <span>💡 <b>盲打流快捷操作</b>：选中行按 [Tab] 试听重播 | 编辑文本后按 [Enter] 确认已校验并跳下一行 | [Delete] 剔除废片</span>
+        💡 <b>盲打极速校对</b>：选中输入框按 <b>[Tab]</b> 试听重播 | 修改文本后按 <b>[Enter]</b> 确认校验并自动跳转下一行播放
       </div>
 
-      <!-- 语料列表容器 -->
-      <div class="table-container" id="utterance-list">
-        <!-- 动态生成列表项 -->
-      </div>
+      <div class="table-container" id="utterance-list"></div>
     </div>
   </div>
 
-  <!-- 导出对话框模态窗 -->
+  <!-- 导出模态窗 -->
   <div class="modal-backdrop" id="export-modal">
     <div class="modal-panel">
-      <div class="modal-title">导出模型训练数据集</div>
+      <div style="font-weight:600; font-size:15px;">导出模型训练集</div>
 
       <div class="form-group">
-        <label class="form-label">导出目标框架格式</label>
+        <label class="form-label">导出格式</label>
         <select class="form-input" id="export-format">
-          <option value="gpt_sovits">GPT-SoVITS 专属 (wavs/ + train.list)</option>
+          <option value="gpt_sovits">GPT-SoVITS 声音克隆 (wavs/ + train.list)</option>
           <option value="jsonl">JSONL 通用多模态 (HuggingFace / Whisper / LLM)</option>
           <option value="ljspeech">LJSpeech 经典格式 (wavs/ + metadata.csv)</option>
-          <option value="srt_md">SRT / Markdown 时间轴语料归档</option>
-          <option value="all">全量打包导出全部格式</option>
+          <option value="srt_md">SRT / Markdown 字幕与时间轴归档</option>
+          <option value="all">打包导出全部格式</option>
         </select>
       </div>
 
       <div class="form-group">
-        <label class="form-label">导出目标本地目录路径</label>
+        <label class="form-label">目标本地文件夹路径</label>
         <input class="form-input" id="export-dir" type="text" placeholder="/Users/.../dataset" />
       </div>
 
-      <div class="form-group">
-        <label class="form-label">验证集切分比例 (Val Split Ratio: 0% ~ 20%)</label>
-        <input class="form-input" id="export-val-ratio" type="number" min="0" max="0.3" step="0.05" value="0.1" />
+      <div style="display:flex; gap:12px; font-size:12px; color:var(--text-muted);">
+        <label><input type="checkbox" id="export-only-verified" checked /> 仅导出已校验样本</label>
+        <label><input type="checkbox" id="export-copy-audio" checked /> 复制 WAV 音频</label>
       </div>
 
-      <div style="display: flex; gap: 16px; font-size: 12px; color: var(--text-muted);">
-        <label><input type="checkbox" id="export-only-verified" checked /> 仅导出已校验 (Verified) 样本</label>
-        <label><input type="checkbox" id="export-copy-audio" checked /> 复制 WAV 音频到目标目录</label>
-      </div>
-
-      <div class="modal-footer">
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
         <button class="btn-action" id="close-export-modal-btn">取消</button>
         <button class="btn-action primary" id="confirm-export-btn">开始导出</button>
       </div>
@@ -716,24 +600,63 @@
   <script>
     const { invoke } = window.__TAURI__.core;
 
-    let currentViewMode = "hud"; // "hud" | "workbench"
-    let currentFilter = "all";
+    let isCapturing = false;
+    let currentViewMode = "hud";
     let utterances = [];
-    let focusedIndex = 0;
     const audioPlayer = document.getElementById("audio-player");
+    const recordBtn = document.getElementById("record-btn");
+    const micSelect = document.getElementById("mic-select");
 
-    // ── 窗口拖拽与基础操作 ──
+    // ── 拖拽与关闭 ──
     document.getElementById("drag-region").addEventListener("mousedown", (e) => {
       if (e.target.closest("button") || e.target.closest("select")) return;
       invoke("start_dragging");
     });
+    document.getElementById("close-btn").addEventListener("click", () => invoke("close_window"));
+    document.getElementById("folder-btn").addEventListener("click", () => invoke("open_data_directory"));
+    document.getElementById("open-model-btn").addEventListener("click", () => invoke("open_model_directory"));
 
-    document.getElementById("close-btn").addEventListener("click", () => {
-      invoke("close_window");
+    // ── 录音核心大按钮点击 ──
+    recordBtn.addEventListener("click", async () => {
+      try {
+        if (!isCapturing) {
+          const selectedDevice = micSelect.value || null;
+          await invoke("start_recording", { deviceName: selectedDevice });
+          isCapturing = true;
+          recordBtn.textContent = "⏹ 停止录音";
+          recordBtn.classList.add("recording");
+        } else {
+          await invoke("stop_recording");
+          isCapturing = false;
+          recordBtn.textContent = "▶ 开始录音";
+          recordBtn.classList.remove("recording");
+        }
+      } catch (err) {
+        showError("录音启动失败: " + err);
+      }
     });
 
-    document.getElementById("folder-btn").addEventListener("click", () => {
-      invoke("open_data_directory");
+    // ── 麦克风设备列表初始化 ──
+    async function loadDevices() {
+      try {
+        const devices = await invoke("list_input_devices");
+        micSelect.innerHTML = `<option value="">默认麦克风</option>`;
+        devices.forEach(d => {
+          const opt = document.createElement("option");
+          opt.value = d.name;
+          opt.textContent = (d.is_default ? "★ " : "") + d.name;
+          micSelect.appendChild(opt);
+        });
+      } catch (e) {
+        console.error("Failed to list devices:", e);
+      }
+    }
+    loadDevices();
+
+    micSelect.addEventListener("change", async () => {
+      if (isCapturing) {
+        await invoke("start_recording", { deviceName: micSelect.value || null });
+      }
     });
 
     // ── 视图切换 ──
@@ -757,73 +680,69 @@
       }
     });
 
-    // ── 采集模式切换 ──
-    const modeSelect = document.getElementById("mode-select");
-    modeSelect.addEventListener("change", async (e) => {
-      await invoke("set_capture_mode", { mode: e.target.value });
-    });
-
-    // ── 消音控制 ──
-    const muteBtn = document.getElementById("mute-btn");
-    muteBtn.addEventListener("click", async () => {
-      const isMuted = await invoke("toggle_mute");
-      updateMuteUi(isMuted);
-    });
-
-    function updateMuteUi(isMuted) {
-      if (isMuted) {
-        muteBtn.textContent = "🔇";
-        muteBtn.classList.add("active");
-      } else {
-        muteBtn.textContent = "🎙️";
-        muteBtn.classList.remove("active");
-      }
+    function showError(msg) {
+      const banner = document.getElementById("banner-alert");
+      const text = document.getElementById("banner-text");
+      banner.className = "banner-alert error";
+      banner.style.display = "flex";
+      text.textContent = msg;
     }
 
-    // ── 状态轮询 (高频 100ms 刷新波形与状态) ──
+    // ── 状态轮询 ──
     async function pollStatus() {
       try {
-        const status = await invoke("get_app_status");
+        const s = await invoke("get_app_status");
+        isCapturing = s.is_capturing;
 
-        // 状态徽标更新
-        const statusBadge = document.getElementById("status-badge");
-        const statusText = document.getElementById("status-text");
-        statusBadge.className = "status-badge " + status.status;
-
-        if (status.is_muted) {
-          statusText.textContent = "已消音";
-        } else if (status.is_silent) {
-          statusText.textContent = "静默采集";
-        } else if (status.status === "recording") {
-          statusText.textContent = "正在录制";
-        } else if (status.status === "listening") {
-          statusText.textContent = "监听中";
+        // 同步大按钮状态
+        if (isCapturing) {
+          recordBtn.textContent = "⏹ 停止录音";
+          recordBtn.classList.add("recording");
         } else {
-          statusText.textContent = "待机空闲";
+          recordBtn.textContent = "▶ 开始录音";
+          recordBtn.classList.remove("recording");
         }
 
-        // HUD 电平条更新
-        const fillPercent = Math.min(100, Math.max(0, (status.peak_dbfs + 60) * (100 / 60)));
-        document.getElementById("hud-level-fill").style.width = fillPercent + "%";
-        document.getElementById("hud-dbfs").textContent = status.peak_dbfs.toFixed(1) + " dB";
+        // 状态徽标
+        const statusBadge = document.getElementById("status-badge");
+        const statusText = document.getElementById("status-text");
+        statusBadge.className = "status-badge " + s.status;
 
-        // HUD 录制计时器
-        if (status.current_duration_s > 0) {
-          document.getElementById("hud-timer").textContent = status.current_duration_s.toFixed(1) + "s";
+        if (s.status === "recording") {
+          statusText.textContent = "正在录制";
+        } else if (s.status === "listening") {
+          statusText.textContent = "监听中 (随时说话)";
+        } else {
+          statusText.textContent = "待机空闲 (点击开始)";
+        }
+
+        // 电平条
+        const fillPercent = Math.min(100, Math.max(0, (s.peak_dbfs + 60) * (100 / 60)));
+        document.getElementById("hud-level-fill").style.width = fillPercent + "%";
+        document.getElementById("hud-dbfs").textContent = s.peak_dbfs.toFixed(1) + " dB";
+
+        // 录制计时
+        if (s.current_duration_s > 0) {
+          document.getElementById("hud-timer").textContent = s.current_duration_s.toFixed(1) + "s";
           document.getElementById("hud-timer").style.color = "var(--danger)";
         } else {
           document.getElementById("hud-timer").textContent = "00.0s";
           document.getElementById("hud-timer").style.color = "var(--text-main)";
         }
 
-        // 待转写数量统计
-        document.getElementById("stat-pending").textContent = status.pending_asr_count;
-        const batchBtn = document.getElementById("batch-asr-btn");
-        if (status.pending_asr_count > 0) {
-          batchBtn.textContent = `⚡ 批量转写 (${status.pending_asr_count})`;
-          batchBtn.style.display = "inline-flex";
+        // 错误及模型提示
+        const banner = document.getElementById("banner-alert");
+        const bannerText = document.getElementById("banner-text");
+        if (s.error_message) {
+          banner.className = "banner-alert error";
+          banner.style.display = "flex";
+          bannerText.textContent = s.error_message;
+        } else if (!s.model_ready) {
+          banner.className = "banner-alert";
+          banner.style.display = "flex";
+          bannerText.textContent = "💡 提示：尚未检测到 SenseVoice 模型，语音将正常无损切片保存为 WAV。";
         } else {
-          batchBtn.textContent = "⚡ 批量转写";
+          banner.style.display = "none";
         }
 
       } catch (err) {
@@ -832,14 +751,11 @@
     }
     setInterval(pollStatus, 120);
 
-    // ── 语料加载与渲染 ──
+    // ── 语料工作台 ──
     async function loadUtterances() {
       try {
-        utterances = await invoke("list_utterances", {
-          sessionId: null,
-          statusFilter: currentFilter,
-        });
-        renderUtteranceList();
+        utterances = await invoke("list_utterances", { sessionId: null, statusFilter: null });
+        renderList();
         updateStats();
       } catch (err) {
         console.error("Failed to load utterances:", err);
@@ -860,81 +776,60 @@
       document.getElementById("stat-verified").textContent = `${verified} / ${valid.length}`;
     }
 
-    function renderUtteranceList() {
+    function renderList() {
       const listEl = document.getElementById("utterance-list");
       listEl.innerHTML = "";
 
       if (utterances.length === 0) {
-        listEl.innerHTML = `<div style="text-align:center; padding: 40px; color: var(--text-dim); font-size: 13px;">暂无语音切片，请对着麦克风说话或切换模式开始录制</div>`;
+        listEl.innerHTML = `<div style="text-align:center; padding: 40px; color: var(--text-dim); font-size: 13px;">暂无语音切片，点击顶部「▶ 开始录音」后说话即可自动切片。</div>`;
         return;
       }
 
       utterances.forEach((u, idx) => {
         const card = document.createElement("div");
-        card.className = "utterance-card";
-        if (u.verified) card.classList.add("verified");
-        if (u.peak_dbfs >= -0.3) card.classList.add("clipping");
-        if (idx === focusedIndex) card.classList.add("focused");
+        card.className = "utterance-card" + (u.verified ? " verified" : "");
         card.dataset.index = idx;
 
         const durSec = (u.duration_ms / 1000).toFixed(1) + "s";
-        const isClipping = u.peak_dbfs >= -0.3;
-
         card.innerHTML = `
-          <button class="play-btn" data-id="${u.id}" data-path="${u.audio_filepath}" title="播放/重播 (Tab)">▶</button>
+          <button class="play-btn" data-path="${u.audio_filepath}" title="播放 (Tab)">▶</button>
           <div class="card-meta">
-            <div class="card-id" title="${u.id}">${u.id}</div>
-            <div class="card-tags">
-              <span class="tag">${durSec}</span>
-              <span class="tag">${u.peak_dbfs.toFixed(1)}dB</span>
-              ${isClipping ? '<span class="tag clipping-tag">削波!</span>' : ''}
-              ${u.emotion ? `<span class="tag" style="color:var(--accent-color)">${u.emotion}</span>` : ''}
+            <div>${u.id}</div>
+            <div style="display:flex; gap:6px; margin-top:2px;">
+              <span>${durSec}</span>
+              <span>${u.peak_dbfs.toFixed(1)}dB</span>
             </div>
           </div>
-          <div class="card-input-wrapper">
-            <input type="text" class="card-text-input" value="${escapeHtml(u.text)}"
-              data-id="${u.id}" placeholder="${u.status === 'Pending_ASR' ? '等待离线 ASR 转写中...' : '点击编辑文本内容...'}" />
-          </div>
-          <div class="card-actions">
-            <button class="btn-action ${u.verified ? 'primary' : ''}" style="padding: 4px 8px; font-size: 11px;"
-              data-action="verify" data-id="${u.id}">${u.verified ? '✓ 已校验' : '确认'}</button>
-            <button class="btn-action" style="padding: 4px 8px; font-size: 11px; color: var(--danger);"
-              data-action="delete" data-id="${u.id}">🗑️</button>
-          </div>
+          <input type="text" class="card-text-input" value="${escapeHtml(u.text)}" placeholder="输入或校对文字..." />
+          <button class="btn-action ${u.verified ? 'primary' : ''}" data-action="verify">${u.verified ? '✓ 已校验' : '确认'}</button>
+          <button class="btn-action" style="color:var(--danger);" data-action="delete">🗑️</button>
         `;
 
-        // 播放按钮
-        card.querySelector(".play-btn").addEventListener("click", () => playUtteranceAudio(u.audio_filepath));
+        card.querySelector(".play-btn").addEventListener("click", () => playAudio(u.audio_filepath));
 
-        // 文本框 Enter / Tab 交互
         const input = card.querySelector(".card-text-input");
-        input.addEventListener("focus", () => {
-          focusedIndex = idx;
-          highlightFocusedCard();
-        });
-
         input.addEventListener("keydown", async (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            // 保存并标记已校验
-            await invoke("update_utterance_text", {
-              id: u.id,
-              text: input.value,
-              textNormalized: null,
-              verified: true,
-            });
+            await invoke("update_utterance_text", { id: u.id, text: input.value, textNormalized: null, verified: true });
             u.text = input.value;
             u.verified = true;
             card.classList.add("verified");
-            // 跳下一行并播放
-            focusNextUtterance(idx);
+            // 跳下一行
+            const nextCard = document.querySelector(`.utterance-card[data-index="${idx + 1}"]`);
+            if (nextCard) {
+              const nextInput = nextCard.querySelector(".card-text-input");
+              if (nextInput) {
+                nextInput.focus();
+                playAudio(utterances[idx + 1].audio_filepath);
+              }
+            }
           } else if (e.key === "Tab") {
             e.preventDefault();
-            playUtteranceAudio(u.audio_filepath);
+            playAudio(u.audio_filepath);
           }
         });
 
-        // 校验按钮
         card.querySelector('[data-action="verify"]').addEventListener("click", async () => {
           await invoke("mark_utterance_status", { id: u.id, status: u.verified ? "Transcribed" : "Verified" });
           u.verified = !u.verified;
@@ -942,11 +837,10 @@
           updateStats();
         });
 
-        // 剔除删除按钮
         card.querySelector('[data-action="delete"]').addEventListener("click", async () => {
           await invoke("delete_utterance", { id: u.id });
           utterances.splice(idx, 1);
-          renderUtteranceList();
+          renderList();
           updateStats();
         });
 
@@ -954,26 +848,7 @@
       });
     }
 
-    function highlightFocusedCard() {
-      document.querySelectorAll(".utterance-card").forEach((c, idx) => {
-        c.classList.toggle("focused", idx === focusedIndex);
-      });
-    }
-
-    function focusNextUtterance(currentIndex) {
-      const nextIndex = currentIndex + 1;
-      if (nextIndex < utterances.length) {
-        focusedIndex = nextIndex;
-        highlightFocusedCard();
-        const nextInput = document.querySelector(`.utterance-card[data-index="${nextIndex}"] .card-text-input`);
-        if (nextInput) {
-          nextInput.focus();
-          playUtteranceAudio(utterances[nextIndex].audio_filepath);
-        }
-      }
-    }
-
-    async function playUtteranceAudio(filepath) {
+    async function playAudio(filepath) {
       try {
         const dataUrl = await invoke("read_audio_base64", { filepath });
         audioPlayer.src = dataUrl;
@@ -987,45 +862,20 @@
       return (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    // ── 筛选切换 ──
-    document.querySelectorAll(".filter-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        currentFilter = btn.dataset.filter;
-        loadUtterances();
-      });
-    });
-
-    // ── 批量 ASR ──
-    document.getElementById("batch-asr-btn").addEventListener("click", async () => {
-      try {
-        const count = await invoke("run_batch_asr", { sessionId: null });
-        alert(`已开始后台批量转写 ${count} 条切片，将在数秒内逐步完成！`);
-        setTimeout(loadUtterances, 1500);
-      } catch (err) {
-        alert("批量转写失败: " + err);
-      }
-    });
-
-    // ── 导出模态窗 ──
+    // ── 导出 ──
     const exportModal = document.getElementById("export-modal");
     document.getElementById("open-export-modal-btn").addEventListener("click", () => {
       exportModal.style.display = "flex";
-      // 默认填充建议路径
       if (!document.getElementById("export-dir").value) {
         document.getElementById("export-dir").value = "~/voiceforge_dataset";
       }
     });
 
-    document.getElementById("close-export-modal-btn").addEventListener("click", () => {
-      exportModal.style.display = "none";
-    });
+    document.getElementById("close-export-modal-btn").addEventListener("click", () => exportModal.style.display = "none");
 
     document.getElementById("confirm-export-btn").addEventListener("click", async () => {
       const format = document.getElementById("export-format").value;
       const targetDir = document.getElementById("export-dir").value;
-      const valRatio = parseFloat(document.getElementById("export-val-ratio").value) || 0.1;
       const onlyVerified = document.getElementById("export-only-verified").checked;
       const copyAudio = document.getElementById("export-copy-audio").checked;
 
@@ -1036,14 +886,7 @@
 
       try {
         const res = await invoke("export_dataset", {
-          options: {
-            format,
-            targetDir,
-            sessionId: null,
-            onlyVerified,
-            valRatio,
-            copyAudio,
-          }
+          options: { format, targetDir, sessionId: null, onlyVerified, valRatio: 0.1, copyAudio }
         });
         alert(res);
         exportModal.style.display = "none";
@@ -1052,7 +895,17 @@
       }
     });
 
-    // 页面加载时自动初始轮询
+    // 批量 ASR
+    document.getElementById("batch-asr-btn").addEventListener("click", async () => {
+      try {
+        const count = await invoke("run_batch_asr", { sessionId: null });
+        alert(`已开始后台转写 ${count} 条切片！`);
+        setTimeout(loadUtterances, 1500);
+      } catch (err) {
+        alert("批量转写失败: " + err);
+      }
+    });
+
     pollStatus();
   </script>
 </body>
