@@ -511,8 +511,11 @@
         <!-- 打开语料文件夹 -->
         <button class="btn-icon" id="folder-btn" title="打开本地语料库目录">📁</button>
 
+        <!-- 最小化到任务栏 -->
+        <button class="btn-icon" id="minimize-btn" title="最小化到任务栏">—</button>
+
         <!-- 隐藏至托盘 -->
-        <button class="btn-icon danger" id="close-btn" title="最小化隐藏 (后台继续录音)">×</button>
+        <button class="btn-icon danger" id="close-btn" title="关闭并隐藏至系统托盘 (后台继续静默录音)">×</button>
       </div>
     </div>
 
@@ -612,6 +615,7 @@
       if (e.target.closest("button") || e.target.closest("select")) return;
       invoke("start_dragging");
     });
+    document.getElementById("minimize-btn").addEventListener("click", () => invoke("minimize_window"));
     document.getElementById("close-btn").addEventListener("click", () => invoke("close_window"));
     document.getElementById("folder-btn").addEventListener("click", () => invoke("open_data_directory"));
     document.getElementById("open-model-btn").addEventListener("click", () => invoke("open_model_directory"));

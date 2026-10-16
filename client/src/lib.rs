@@ -286,6 +286,11 @@ fn start_dragging(window: WebviewWindow) {
 }
 
 #[tauri::command]
+fn minimize_window(window: WebviewWindow) {
+    let _ = window.minimize();
+}
+
+#[tauri::command]
 fn close_window(window: WebviewWindow) {
     let _ = window.hide();
 }
@@ -370,6 +375,7 @@ pub fn run() {
             read_audio_base64,
             switch_view_mode,
             start_dragging,
+            minimize_window,
             close_window,
             open_data_directory,
             open_model_directory,
