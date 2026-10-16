@@ -1,629 +1,337 @@
-mod audio;
-use audio::AudioSessionInfo;
+pub mod asr;
+pub mod audio;
+pub mod db;
+pub mod export;
+pub mod state;
+pub mod vad;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
+use tauri::{LogicalSize, State, WebviewWindow};
 
-use anyhow::Result;
-use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use tauri::{LogicalSize, Manager, State, WebviewWindow};
-use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, Code, ShortcutState};
-use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use url::Url;
+use crate::audio::{AudioDeviceInfo, AudioEngineHandle};
+use crate::db::{SessionRecord, UtteranceRecord};
+use crate::export::{ExportOptions, Exporter};
+use crate::state::{AppState, AppStatusDto, CaptureMode};
 
-// ── 翻译 API 常量 ─────────────────────────────────────────────────────────────
-const TRANSLATE_API_URL: &str = "https://index-translate.bilibili.com/v1/chat/completions";
-const TRANSLATE_MODEL: &str = "Index-Translate-35B-A3B";
-/// 翻译目标语言（可按需修改：中文 / 英文 / 日文 等）
-const TRANSLATE_TARGET_LANG: &str = "中文";
+fn find_model_dir() -> PathBuf {
+    let candidates = [
+        std::env::var("MODEL_DIR").unwrap_or_default(),
+        "../models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
+        "/Users/yutao/llm/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
+        "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
+        "./models".to_string(),
+    ];
 
-const DEFAULT_SERVER_URL: &str = "ws://192.168.10.2:8765/v1/audio/stream";
-
-fn configured_server_url() -> String {
-    std::env::var("SUBTITLE_HUD_SERVER_URL").unwrap_or_else(|_| DEFAULT_SERVER_URL.into())
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Subtitle {
-    #[serde(default)]
-    id: u64,
-    #[serde(default = "default_is_final")]
-    is_final: bool,
-    #[serde(default = "default_stage")]
-    stage: String,
-    #[serde(alias = "text", alias = "transcript", alias = "result")]
-    text: String,
-    #[serde(default)]
-    translated: String,
-    #[serde(default = "default_language")]
-    language: String,
-    #[serde(default)]
-    latency_ms: Option<u64>,
-}
-
-fn default_is_final() -> bool {
-    true
-}
-
-fn default_stage() -> String {
-    "asr".into()
-}
-
-fn default_language() -> String {
-    "auto".into()
-}
-
-impl Default for Subtitle {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            is_final: true,
-            stage: "asr".into(),
-            text: "等待原文…".into(),
-            translated: "等待翻译…".into(),
-            language: "auto".into(),
-            latency_ms: None,
+    for path_str in &candidates {
+        if path_str.is_empty() {
+            continue;
         }
+        let p = PathBuf::from(path_str);
+        if p.exists() && p.join("silero_vad.onnx").exists() {
+            return p;
+        }
+    }
+    PathBuf::from("./models")
+}
+
+fn get_data_dir() -> PathBuf {
+    let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
+    home.join(".voiceforge_mini")
+}
+
+fn dirs_next() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var("APPDATA").ok().map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share"))
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Snapshot {
-    server_url: String,
-    status: String,
-    subtitle: Subtitle,
-    passthrough: bool,
-    selected_pid: Option<u32>,
-    translation_enabled: bool,
-    language: String,
-}
+// ── Tauri Commands ────────────────────────────────────────────────────────────
 
-pub struct SharedState {
-    server_url: Mutex<String>,
-    status: Mutex<String>,
-    subtitle: Mutex<Subtitle>,
-    url_tx: watch::Sender<String>,
-    passthrough: AtomicBool,
-    /// 当前选中的音频进程 PID。None / Some(0) 表示使用全局混音。
-    selected_pid: Mutex<Option<u32>>,
-    pid_tx: watch::Sender<Option<u32>>,
-    /// 当前字幕版本号，用于防止异步翻译乱序覆盖
-    subtitle_version: AtomicU64,
-    /// 是否开启大模型翻译。关闭时只接收并显示 ASR 识别结果（超低延迟调试模式）
-    translation_enabled: AtomicBool,
-    /// ASR 识别的目标语种（如 "en", "ja", "zh", "auto" 等）
-    language: Mutex<String>,
-    language_tx: watch::Sender<String>,
-    /// 当前正在说话的句子的已锁定不可变前缀（LCP Prefix）
-    locked_prefix: Mutex<String>,
-    /// 当前正在说的最后推断结果
-    last_partial_raw: Mutex<String>,
-}
-
-/// 计算两个字符串的公共最长前缀（按 Unicode 字符边界）
-fn longest_common_prefix(a: &str, b: &str) -> String {
-    let mut prefix = String::new();
-    let mut b_chars = b.chars();
-    for ca in a.chars() {
-        if let Some(cb) = b_chars.next() {
-            if ca == cb {
-                prefix.push(ca);
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    prefix
-}
-
-impl SharedState {
-    fn new(
-        url_tx: watch::Sender<String>,
-        pid_tx: watch::Sender<Option<u32>>,
-        language_tx: watch::Sender<String>,
-    ) -> Self {
-        Self {
-            server_url: Mutex::new(configured_server_url()),
-            status: Mutex::new("connecting".into()),
-            subtitle: Mutex::new(Subtitle::default()),
-            url_tx,
-            passthrough: AtomicBool::new(false),
-            selected_pid: Mutex::new(None),
-            pid_tx,
-            subtitle_version: AtomicU64::new(0),
-            translation_enabled: AtomicBool::new(true),
-            language: Mutex::new("en".into()),
-            language_tx,
-            locked_prefix: Mutex::new(String::new()),
-            last_partial_raw: Mutex::new(String::new()),
-        }
-    }
-
-    fn set_status(&self, status: &str) {
-        if let Ok(mut value) = self.status.lock() {
-            *value = status.into();
-        }
-    }
-
-    /// 核心算法：LCP (最长公共前缀) 平滑向前生长
-    /// 当收到流式增量 partial 时：
-    /// 1. 若当前 partial 与上一次推测有公共前缀，且公共前缀增长，则把公共前缀固化进 locked_prefix（永久锁定不变）；
-    /// 2. 只有超过 locked_prefix 的后缀才作为打字尾巴追加；
-    /// 3. 如果当前推测长度甚至小于当前已锁定的前缀，保留已锁定的前缀不后退，绝不发生删字抖动！
-    fn update_partial_lcp(&self, raw_incoming: &str, lang: &str) {
-        let incoming = raw_incoming.trim();
-        if incoming.is_empty() {
-            return;
-        }
-
-        let mut locked_guard = match self.locked_prefix.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let mut last_raw_guard = match self.last_partial_raw.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-
-        // 如果上次有推测，计算这次与上次的 LCP
-        if !last_raw_guard.is_empty() {
-            let common = longest_common_prefix(&last_raw_guard, incoming);
-            // 如果公共前缀比当前已锁定的还长，前进锁定线！
-            if common.len() > locked_guard.len() {
-                *locked_guard = common;
-            }
-        }
-        *last_raw_guard = incoming.to_string();
-
-        // 构造前向单调递增的平滑显示文本：
-        // 保证展示内容必须以 locked_prefix 开头，只拼接新增的尾巴
-        let smooth_text = if incoming.starts_with(locked_guard.as_str()) {
-            incoming.to_string()
-        } else {
-            // 如果模型出现局部抖动，强制保留已锁定的前缀，并在尾部追加新词
-            let mut combined = locked_guard.clone();
-            // 找到 incoming 中未被包含的新鲜部分
-            if incoming.len() > locked_guard.len() {
-                combined.push(' ');
-                combined.push_str(&incoming[locked_guard.len()..]);
-            }
-            combined
-        };
-
-        if let Ok(mut current) = self.subtitle.lock() {
-            current.is_final = false;
-            current.stage = "partial".into();
-            current.text = smooth_text;
-            current.language = lang.to_string();
-            // 关键：partial 打字期间，保留现有的 translated，绝不覆盖成任何“输入中”或空白！
-        }
-    }
-
-    /// 句末停顿触发定稿 (is_final == true)：
-    /// 重置本句的前缀锁，将最终整句作为定稿提交
-    fn commit_final_text(&self, mut new_sub: Subtitle) -> u64 {
-        // 重置当前句的 LCP 缓冲区
-        if let Ok(mut locked) = self.locked_prefix.lock() {
-            locked.clear();
-        }
-        if let Ok(mut last_raw) = self.last_partial_raw.lock() {
-            last_raw.clear();
-        }
-
-        let version = self.subtitle_version.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Ok(mut current) = self.subtitle.lock() {
-            // 定稿时若译文暂未生成，依然平滑保持上一句的译文，不产生突兀空白
-            if new_sub.translated.is_empty() {
-                new_sub.translated = current.translated.clone();
-            }
-            *current = new_sub;
-        }
-        version
-    }
-
-    /// 第二阶段：大模型异步意译完成，平滑注入译文
-    fn update_translated_text(&self, version: u64, translated: String) {
-        let current_version = self.subtitle_version.load(Ordering::SeqCst);
-        if current_version == version {
-            if let Ok(mut current) = self.subtitle.lock() {
-                current.translated = translated;
-                current.stage = "trans".into();
-            }
-        }
-    }
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            server_url: self
-                .server_url
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default(),
-            status: self
-                .status
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_else(|_| "offline".into()),
-            subtitle: self
-                .subtitle
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default(),
-            passthrough: self.passthrough.load(Ordering::Relaxed),
-            selected_pid: self
-                .selected_pid
-                .lock()
-                .map(|v| *v)
-                .unwrap_or(None),
-            translation_enabled: self.translation_enabled.load(Ordering::Relaxed),
-            language: self
-                .language
-                .lock()
-                .map(|v| v.clone())
-                .unwrap_or_else(|_| "en".into()),
-        }
-    }
+#[tauri::command]
+fn get_app_status(state: State<Arc<AppState>>) -> AppStatusDto {
+    state.get_status_dto()
 }
 
 #[tauri::command]
-fn get_snapshot(state: State<'_, Arc<SharedState>>) -> Snapshot {
-    state.snapshot()
-}
-
-#[tauri::command]
-fn set_server_url(url: String, state: State<'_, Arc<SharedState>>) -> Result<(), String> {
-    let parsed = Url::parse(url.trim()).map_err(|_| "WebSocket 地址格式无效".to_string())?;
-    if !matches!(parsed.scheme(), "ws" | "wss") || parsed.host_str().is_none() {
-        return Err("地址必须使用 ws:// 或 wss://，并包含主机名".into());
-    }
-    let normalized = parsed.to_string();
-    *state
-        .server_url
-        .lock()
-        .map_err(|_| "状态不可用".to_string())? = normalized.clone();
-    state
-        .url_tx
-        .send(normalized)
-        .map_err(|_| "后台连接任务已停止".to_string())?;
+fn set_capture_mode(mode: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    let new_mode = match mode.as_str() {
+        "push_to_talk" => CaptureMode::PushToTalk,
+        "continuous_vad" => CaptureMode::ContinuousVad,
+        "silent_realtime" => CaptureMode::SilentRealtime,
+        "silent_deferred" => CaptureMode::SilentDeferred,
+        _ => return Err(format!("Unknown capture mode: {}", mode)),
+    };
+    *state.capture_mode.lock().unwrap() = new_mode;
+    let is_silent = matches!(new_mode, CaptureMode::SilentRealtime | CaptureMode::SilentDeferred);
+    state.is_silent.store(is_silent, Ordering::SeqCst);
     Ok(())
 }
 
 #[tauri::command]
-fn start_dragging(window: WebviewWindow) -> Result<(), String> {
-    window.start_dragging().map_err(|error| error.to_string())
+fn toggle_mute(state: State<Arc<AppState>>) -> bool {
+    let current = state.is_muted.load(Ordering::SeqCst);
+    let new_val = !current;
+    state.is_muted.store(new_val, Ordering::SeqCst);
+    new_val
 }
 
 #[tauri::command]
-fn close_window(window: WebviewWindow) -> Result<(), String> {
-    window.close().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn set_passthrough(
-    enabled: bool,
+fn toggle_silent_mode(
     window: WebviewWindow,
-    state: State<'_, Arc<SharedState>>,
+    state: State<Arc<AppState>>,
+) -> Result<bool, String> {
+    let current_silent = state.is_silent.load(Ordering::SeqCst);
+    let new_silent = !current_silent;
+    state.is_silent.store(new_silent, Ordering::SeqCst);
+
+    if new_silent {
+        *state.capture_mode.lock().unwrap() = CaptureMode::SilentDeferred;
+        let _ = window.hide();
+    } else {
+        *state.capture_mode.lock().unwrap() = CaptureMode::ContinuousVad;
+        let _ = window.show();
+    }
+    Ok(new_silent)
+}
+
+#[tauri::command]
+fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+    AudioEngineHandle::list_input_devices().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn select_input_device(
+    device_name: Option<String>,
+    engine: State<'_, AudioEngineHandle>,
 ) -> Result<(), String> {
-    window
-        .set_ignore_cursor_events(enabled)
-        .map_err(|error| error.to_string())?;
-    state.passthrough.store(enabled, Ordering::Relaxed);
+    engine.start_capture(device_name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_sessions(state: State<Arc<AppState>>) -> Result<Vec<SessionRecord>, String> {
+    state.db.list_sessions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_session(
+    name: String,
+    mode: String,
+    speaker: String,
+    state: State<Arc<AppState>>,
+) -> Result<SessionRecord, String> {
+    let session_id = format!("sess_{}", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let mut rec = state
+        .db
+        .get_or_create_session(&session_id, &mode, &speaker)
+        .map_err(|e| e.to_string())?;
+    if !name.is_empty() {
+        rec.name = name;
+    }
+    *state.current_session_id.lock().unwrap() = session_id;
+    Ok(rec)
+}
+
+#[tauri::command]
+fn set_active_session(session_id: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    *state.current_session_id.lock().unwrap() = session_id;
     Ok(())
 }
 
 #[tauri::command]
-fn resize_window(width: f64, height: f64, window: WebviewWindow) -> Result<(), String> {
-    let width = width.clamp(220.0, 900.0);
-    let height = height.clamp(88.0, 180.0);
-    window
-        .set_size(tauri::Size::Logical(LogicalSize { width, height }))
-        .map_err(|error| error.to_string())
-}
-
-/// 枚举当前默认输出设备上所有活跃的音频会话，供前端渲染选择列表。
-#[tauri::command]
-fn list_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
-    audio::list_audio_sessions().map_err(|e| e.to_string())
-}
-
-/// 设置要捕获的目标进程 PID。pid = None 或 0 表示恢复全局混音。
-#[tauri::command]
-fn set_audio_session(
-    pid: Option<u32>,
-    state: State<'_, Arc<SharedState>>,
-) -> Result<(), String> {
-    let normalized = pid.filter(|&p| p != 0);
-    *state
-        .selected_pid
-        .lock()
-        .map_err(|_| "状态不可用".to_string())? = normalized;
+fn list_utterances(
+    session_id: Option<String>,
+    status_filter: Option<String>,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<UtteranceRecord>, String> {
     state
-        .pid_tx
-        .send(normalized)
-        .map_err(|_| "音频线程已停止".to_string())?;
-    Ok(())
+        .db
+        .list_utterances(session_id.as_deref(), status_filter.as_deref())
+        .map_err(|e| e.to_string())
 }
 
-/// 设置要识别的目标语种，并通知后端实时生效
 #[tauri::command]
-fn set_language(
-    language: String,
-    state: State<'_, Arc<SharedState>>,
+fn update_utterance_text(
+    id: String,
+    text: String,
+    text_normalized: Option<String>,
+    verified: bool,
+    state: State<Arc<AppState>>,
 ) -> Result<(), String> {
-    let lang = language.trim().to_lowercase();
-    if lang.is_empty() {
-        return Err("语种不能为空".into());
-    }
-    *state
-        .language
-        .lock()
-        .map_err(|_| "状态不可用".to_string())? = lang.clone();
     state
-        .language_tx
-        .send(lang)
-        .map_err(|_| "WebSocket 任务已停止".to_string())?;
-    Ok(())
+        .db
+        .update_utterance_text(&id, &text, text_normalized.as_deref(), verified)
+        .map_err(|e| e.to_string())
 }
 
-/// 开启或关闭大模型翻译。关闭后将只显示纯 ASR 识别结果（最低延迟）
 #[tauri::command]
-fn set_translation_enabled(
-    enabled: bool,
-    state: State<'_, Arc<SharedState>>,
+fn mark_utterance_status(
+    id: String,
+    status: String,
+    state: State<Arc<AppState>>,
 ) -> Result<(), String> {
-    state.translation_enabled.store(enabled, Ordering::Relaxed);
+    state
+        .db
+        .mark_utterance_status(&id, &status)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_utterance(id: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    state.db.delete_utterance(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_batch_asr(
+    session_id: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<usize, String> {
+    let pending = state
+        .db
+        .get_pending_asr_ids(session_id.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    let count = pending.len();
+    let state_clone = (*state).clone();
+
+    tokio::task::spawn_blocking(move || {
+        for (id, filepath) in pending {
+            let path = std::path::Path::new(&filepath);
+            if let Ok(mut reader) = hound::WavReader::open(path) {
+                let spec = reader.spec();
+                let samples: Vec<f32> = reader
+                    .samples::<i16>()
+                    .filter_map(Result::ok)
+                    .map(|s| s as f32 / 32768.0)
+                    .collect();
+
+                audio::run_asr_for_utterance(&state_clone, &id, &samples, spec.sample_rate as i32);
+            }
+        }
+    });
+
+    Ok(count)
+}
+
+#[tauri::command]
+fn export_dataset(
+    options: ExportOptions,
+    state: State<Arc<AppState>>,
+) -> Result<String, String> {
+    let records = state
+        .db
+        .list_utterances(options.session_id.as_deref(), None)
+        .map_err(|e| e.to_string())?;
+
+    Exporter::export(&records, &options).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_audio_base64(filepath: String) -> Result<String, String> {
+    let bytes = fs::read(&filepath).map_err(|e| format!("Failed to read {}: {}", filepath, e))?;
+    let encoded = BASE64_STANDARD.encode(&bytes);
+    Ok(format!("data:audio/wav;base64,{}", encoded))
+}
+
+#[tauri::command]
+fn switch_view_mode(mode: String, window: WebviewWindow) -> Result<(), String> {
+    if mode == "hud" {
+        let _ = window.set_size(LogicalSize::new(760.0, 160.0));
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_resizable(true);
+    } else {
+        let _ = window.set_size(LogicalSize::new(1160.0, 760.0));
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_resizable(true);
+    }
     Ok(())
 }
 
-async fn websocket_loop(
-    state: Arc<SharedState>,
-    mut audio_rx: mpsc::Receiver<Vec<u8>>,
-    mut url_rx: watch::Receiver<String>,
-    mut language_rx: watch::Receiver<String>,
-    client: reqwest::Client,
-) {
-    loop {
-        let url = url_rx.borrow().clone();
-        state.set_status("connecting");
-        match connect_async(&url).await {
-            Ok((mut socket, _response)) => {
-                state.set_status("connected");
-                let result =
-                    run_connection(&state, &mut socket, &mut audio_rx, &mut url_rx, &mut language_rx, &url, &client).await;
-                if result.is_err() {
-                    state.set_status("reconnecting");
-                }
-            }
-            Err(error) => {
-                eprintln!("WebSocket connection failed: {error}");
-                state.set_status("reconnecting");
-            }
-        }
+#[tauri::command]
+fn start_dragging(window: WebviewWindow) {
+    let _ = window.start_dragging();
+}
 
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {},
-            changed = url_rx.changed() => {
-                if changed.is_err() { return; }
-            }
-        }
+#[tauri::command]
+fn close_window(window: WebviewWindow) {
+    let _ = window.hide();
+}
+
+#[tauri::command]
+fn open_data_directory(state: State<Arc<AppState>>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&state.data_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
-}
-
-async fn run_connection(
-    state: &Arc<SharedState>,
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    audio_rx: &mut mpsc::Receiver<Vec<u8>>,
-    url_rx: &mut watch::Receiver<String>,
-    language_rx: &mut watch::Receiver<String>,
-    connected_url: &str,
-    client: &reqwest::Client,
-) -> Result<()> {
-    // 建立连接后，直接发送一条 JSON 文本消息告知后端正在听的语种
-    let initial_lang = language_rx.borrow().clone();
-    let set_lang_msg = serde_json::json!({
-        "action": "set_language",
-        "language": initial_lang
-    })
-    .to_string();
-    if let Err(e) = socket.send(Message::Text(set_lang_msg.into())).await {
-        eprintln!("failed to send initial set_language message: {e}");
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&state.data_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
-
-    loop {
-        tokio::select! {
-            Some(pcm) = audio_rx.recv() => {
-                socket.send(Message::Binary(pcm.into())).await?;
-            }
-            Some(message) = socket.next() => {
-                match message? {
-                    Message::Text(text) => update_subtitle(state, client, text.as_ref()),
-                    Message::Binary(data) => update_subtitle(state, client, std::str::from_utf8(&data).unwrap_or_default()),
-                    Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
-                    Message::Close(_) => return Err(anyhow::anyhow!("server closed connection")),
-                    _ => {}
-                }
-            }
-            changed = language_rx.changed() => {
-                if changed.is_ok() {
-                    let new_lang = language_rx.borrow().clone();
-                    let msg = serde_json::json!({
-                        "action": "set_language",
-                        "language": new_lang
-                    }).to_string();
-                    let _ = socket.send(Message::Text(msg.into())).await;
-                }
-            }
-            changed = url_rx.changed() => {
-                if changed.is_err() || url_rx.borrow().as_str() != connected_url {
-                    return Err(anyhow::anyhow!("server URL changed"));
-                }
-            }
-            else => return Err(anyhow::anyhow!("connection ended")),
-        }
-    }
+    Ok(())
 }
 
-// ── 翻译 API 请求 / 响应结构体 ─────────────────────────────────────────────────
-#[derive(Serialize)]
-struct TranslateRequest<'a> {
-    model: &'a str,
-    messages: Vec<TranslateMessage<'a>>,
-}
-
-#[derive(Serialize)]
-struct TranslateMessage<'a> {
-    role: &'a str,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct TranslateResponse {
-    choices: Vec<TranslateChoice>,
-}
-
-#[derive(Deserialize)]
-struct TranslateChoice {
-    message: TranslateChoiceMessage,
-}
-
-#[derive(Deserialize)]
-struct TranslateChoiceMessage {
-    content: String,
-}
-
-/// 调用 bilibili Index-Translate API 翻译文本，失败时返回原文
-async fn translate_text(client: &reqwest::Client, source: &str) -> String {
-    if source.is_empty() {
-        return source.to_string();
-    }
-    let body = TranslateRequest {
-        model: TRANSLATE_MODEL,
-        messages: vec![TranslateMessage {
-            role: "user",
-            content: format!(
-                "请将以下内容翻译为{lang}，只输出译文，不要解释：\n\n{text}",
-                lang = TRANSLATE_TARGET_LANG,
-                text = source,
-            ),
-        }],
-    };
-    match client.post(TRANSLATE_API_URL).json(&body).send().await {
-        Ok(resp) => match resp.json::<TranslateResponse>().await {
-            Ok(parsed) => parsed
-                .choices
-                .into_iter()
-                .next()
-                .map(|c| c.message.content.trim().to_string())
-                .unwrap_or_else(|| source.to_string()),
-            Err(err) => {
-                eprintln!("[translate] 解析响应失败: {err}");
-                source.to_string()
-            }
-        },
-        Err(err) => {
-            eprintln!("[translate] 请求失败: {err}");
-            source.to_string()
-        }
-    }
-}
-
-/// 解析 ASR 消息：
-/// 服务端采用 SenseVoice + 神经翻译双阶段推流：
-/// 1. 若为说话中的打字机增量（is_final == false）：
-///    采用 LCP 最长公共前缀锁定，只单向往前生长打字。
-/// 2. 若为原音定稿（stage == "asr"）：
-///    更新原文，保留当前屏幕译文平滑过渡，等待服务端几百毫秒后的成熟译文。
-/// 3. 若为意译完成（stage == "trans"）：
-///    直接采纳服务端优质译文，单向切换！彻底杜绝客户端重复发起翻译造成的来回横跳！
-fn update_subtitle(state: &Arc<SharedState>, _client: &reqwest::Client, text: &str) {
-    let Ok(subtitle) = serde_json::from_str::<Subtitle>(text) else {
-        return;
-    };
-
-    let is_translate_enabled = state.translation_enabled.load(Ordering::Relaxed);
-
-    // 1. 说话中的流式打字草稿
-    if !subtitle.is_final {
-        state.update_partial_lcp(&subtitle.text, &subtitle.language);
-        return;
-    }
-
-    // 2. 纯 ASR 模式 (用户关闭了翻译)
-    if !is_translate_enabled {
-        let mut sub = subtitle;
-        sub.translated = sub.text.clone();
-        state.commit_final_text(sub);
-        return;
-    }
-
-    // 3. 服务端已完成意译 (stage == "trans")
-    if subtitle.stage == "trans" && !subtitle.translated.is_empty() {
-        state.commit_final_text(subtitle);
-        return;
-    }
-
-    // 4. 原音定稿 (stage == "asr")：更新定稿原文，保留当前译文平滑过渡
-    state.commit_final_text(subtitle);
-}
-
+// ── Application Entry ─────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let initial_url = configured_server_url();
-    let (url_tx, url_rx) = watch::channel(initial_url);
-    let (pid_tx, pid_rx) = watch::channel::<Option<u32>>(None);
-    let (language_tx, language_rx) = watch::channel("en".to_string());
-    let state = Arc::new(SharedState::new(url_tx, pid_tx, language_tx));
-    let (audio_tx, audio_rx) = mpsc::channel(8);
-    let shortcut_state = state.clone();
-    let shortcut_window_label = "main".to_string();
+    let data_dir = get_data_dir();
+    let model_dir = find_model_dir();
 
-    audio::spawn_capture(audio_tx, state.clone(), pid_rx);
-    // 创建可复用的 HTTP 客户端（带 5 秒超时），用于翻译 API 请求
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("failed to build HTTP client");
-    tauri::async_runtime::spawn(websocket_loop(state.clone(), audio_rx, url_rx, language_rx, http_client));
+    println!("📂 VoiceForge Mini Data Dir: {:?}", data_dir);
+    println!("🤖 VoiceForge Mini Model Dir: {:?}", model_dir);
 
+    let state = Arc::new(
+        AppState::new(data_dir, model_dir)
+            .expect("Failed to initialize AppState"),
+    );
+
+    let audio_engine = AudioEngineHandle::new((*state).clone());
+    // Auto start default input capture
+    let engine_clone = audio_engine.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = engine_clone.start_capture(None).await;
+    });
 
     tauri::Builder::default()
-        .plugin(
-            GlobalShortcutBuilder::new()
-                .with_shortcut("F8")
-                .expect("failed to register F8 recovery shortcut")
-                .with_handler(move |app, shortcut, event| {
-                    if shortcut.key == Code::F8 && event.state() == ShortcutState::Pressed {
-                        if let Some(window) = app.get_webview_window(&shortcut_window_label) {
-                            let _ = window.set_ignore_cursor_events(false);
-                            shortcut_state.passthrough.store(false, Ordering::Relaxed);
-                        }
-                    }
-                })
-                .build(),
-        )
         .manage(state)
+        .manage(audio_engine)
         .invoke_handler(tauri::generate_handler![
-            get_snapshot,
-            set_server_url,
+            get_app_status,
+            set_capture_mode,
+            toggle_mute,
+            toggle_silent_mode,
+            list_input_devices,
+            select_input_device,
+            list_sessions,
+            create_session,
+            set_active_session,
+            list_utterances,
+            update_utterance_text,
+            mark_utterance_status,
+            delete_utterance,
+            run_batch_asr,
+            export_dataset,
+            read_audio_base64,
+            switch_view_mode,
             start_dragging,
             close_window,
-            set_passthrough,
-            resize_window,
-            list_audio_sessions,
-            set_audio_session,
-            set_translation_enabled,
-            set_language,
+            open_data_directory,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("Error while running VoiceForge Mini");
 }

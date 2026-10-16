@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Subtitle HUD",
-  "version": "0.1.0",
-  "identifier": "com.subtitlehud.app",
+  "productName": "VoiceForge Mini",
+  "version": "1.0.0",
+  "identifier": "com.voiceforge.mini",
   "build": {
     "frontendDist": "ui",
     "beforeDevCommand": "",
@@ -13,14 +13,14 @@
     "windows": [
       {
         "label": "main",
-        "title": "Subtitle HUD",
+        "title": "轻语集 (VoiceForge Mini)",
         "url": "index.html",
-        "width": 840,
-        "height": 180,
+        "width": 760,
+        "height": 160,
         "minWidth": 400,
         "minHeight": 120,
         "maxWidth": 1920,
-        "maxHeight": 800,
+        "maxHeight": 1080,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self' data: blob:"
     }
   },
   "bundle": {

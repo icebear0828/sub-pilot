@@ -3,18 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Subtitle HUD</title>
+  <title>轻语集 VoiceForge Mini</title>
   <style>
     :root {
-      --bg-glass: rgba(16, 18, 27, 0.88);
-      --border-glass: rgba(255, 255, 255, 0.14);
-      --accent-color: #00d2d3;
-      --accent-gradient: linear-gradient(135deg, #00d2d3 0%, #54a0ff 100%);
-      --text-main: #ffffff;
-      --text-sub: #ffd32a;
-      --text-muted: rgba(255, 255, 255, 0.55);
-      --danger: #ff4757;
-      --success: #2ed573;
+      --bg-dark: #0e1117;
+      --bg-panel: rgba(22, 27, 34, 0.88);
+      --bg-card: #161b22;
+      --border-color: rgba(255, 255, 255, 0.12);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --accent-color: #38bdf8;
+      --accent-gradient: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --danger: #f43f5e;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --purple: #a855f7;
     }
 
     * {
@@ -36,539 +41,1019 @@
       flex-direction: column;
     }
 
-    /* ─── 悬浮窗主容器 ─── */
-    .hud-window {
+    /* ─── 统一主卡片 ─── */
+    .app-container {
       position: relative;
       flex: 1;
       display: flex;
       flex-direction: column;
-      background: var(--bg-glass);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid var(--border-glass);
-      border-radius: 14px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-      transition: background 0.25s, border-color 0.25s;
+      background: var(--bg-panel);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+      overflow: hidden;
     }
 
-    .hud-window.transparent-mode {
-      background: rgba(10, 10, 15, 0.25);
-      border-color: rgba(255, 255, 255, 0.08);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-    }
-
-    /* ─── 顶栏 (拖拽区 + 快捷控制 + 关闭按钮) ─── */
-    .hud-header {
-      height: 38px;
-      padding: 0 10px 0 14px;
+    /* ─── 顶栏（通用控制条） ─── */
+    .header-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      height: 44px;
+      padding: 0 14px;
+      background: rgba(0, 0, 0, 0.25);
+      border-bottom: 1px solid var(--border-subtle);
       cursor: grab;
     }
-    .hud-header:active {
+
+    .header-bar:active {
       cursor: grabbing;
     }
 
-    .header-left {
+    .brand-section {
       display: flex;
       align-items: center;
       gap: 10px;
     }
 
+    .brand-icon {
+      width: 22px;
+      height: 22px;
+      background: var(--accent-gradient);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 11px;
+      color: #fff;
+    }
+
     .brand-title {
       font-size: 13px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      color: #00d2d3;
+      font-weight: 600;
+      letter-spacing: 0.3px;
       display: flex;
       align-items: center;
       gap: 6px;
     }
 
-    .status-indicator {
+    .status-badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       font-size: 11px;
       padding: 2px 8px;
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.06);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.08);
       color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .status-badge.recording {
+      background: rgba(244, 63, 94, 0.2);
+      color: var(--danger);
+      box-shadow: 0 0 10px rgba(244, 63, 94, 0.3);
+    }
+
+    .status-badge.listening {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-color);
+    }
+
+    .status-badge.muted {
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--warning);
+    }
+
+    .status-badge.silent {
+      background: rgba(168, 85, 247, 0.2);
+      color: var(--purple);
     }
 
     .status-dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: var(--danger);
-      transition: background 0.3s;
-    }
-    .status-dot.connected {
-      background: var(--success);
-      box-shadow: 0 0 8px var(--success);
-    }
-    .status-dot.connecting {
-      background: #ffa502;
+      background: currentColor;
     }
 
-    /* 顶栏右侧按钮组 */
+    .status-badge.recording .status-dot {
+      animation: pulse 1s infinite alternate;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.85); opacity: 0.5; }
+      100% { transform: scale(1.25); opacity: 1; }
+    }
+
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       cursor: default;
     }
 
-    .icon-btn {
+    .mode-select {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .btn-icon {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
       width: 28px;
       height: 28px;
       border-radius: 6px;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
       transition: all 0.15s;
     }
-    .icon-btn:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: #fff;
+
+    .btn-icon:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: var(--accent-color);
     }
-    .icon-btn.active {
-      background: rgba(0, 210, 211, 0.25);
-      color: var(--accent-color);
+
+    .btn-icon.active {
+      background: var(--accent-color);
+      color: #000;
+      border-color: var(--accent-color);
     }
-    .icon-btn.close-btn:hover {
+
+    .btn-icon.danger:hover {
       background: var(--danger);
       color: #fff;
     }
 
-    /* ─── 主体字幕显示区 ─── */
-    .hud-body {
-      flex: 1;
-      padding: 12px 20px;
+    /* ─── 视图 A：Mini HUD 悬浮胶囊 ─── */
+    #hud-view {
       display: flex;
       flex-direction: column;
       justify-content: center;
+      padding: 12px 18px;
+      height: calc(100% - 44px);
       gap: 8px;
-      min-height: 0;
-      position: relative;
     }
 
-    .sub-original {
-      font-size: 15px;
-      line-height: 1.4;
-      color: var(--text-sub);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      opacity: 0.9;
-    }
-
-    .lang-badge {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 1px 5px;
-      border-radius: 4px;
-      background: rgba(255, 211, 42, 0.18);
-      border: 1px solid rgba(255, 211, 42, 0.4);
-      color: var(--text-sub);
-    }
-
-    .original-text {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex: 1;
-      font-family: inherit;
-    }
-
-    .typing-cursor {
-      display: inline-block;
-      color: var(--accent-color);
-      animation: blink 0.8s infinite;
-      font-weight: 300;
-      margin-left: 2px;
-    }
-
-    .sub-translation {
-      font-size: 24px;
-      font-weight: 600;
-      line-height: 1.35;
-      color: var(--text-main);
-      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      transition: font-size 0.2s, opacity 0.2s;
-    }
-
-    .sub-translation.fade-update {
-      animation: fadeInText 0.25s ease-out;
-    }
-
-    @keyframes fadeInText {
-      from { opacity: 0.4; transform: translateY(2px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0; }
-    }
-
-    /* ─── 设置面板 (抽屉式展开) ─── */
-    .settings-panel {
-      position: absolute;
-      top: 38px;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(14, 16, 24, 0.96);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      padding: 16px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      z-index: 100;
-      border-bottom-left-radius: 14px;
-      border-bottom-right-radius: 14px;
-      transform: translateY(-100%);
-      opacity: 0;
-      pointer-events: none;
-      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s;
-    }
-
-    .settings-panel.open {
-      transform: translateY(0);
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .settings-row {
+    .hud-metrics {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 14px;
     }
 
-    .settings-label {
+    .level-meter-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .level-bar-bg {
+      flex: 1;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .level-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #10b981 70%, #f43f5e 95%);
+      transition: width 0.08s ease;
+      border-radius: 4px;
+    }
+
+    .dbfs-text {
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--text-dim);
+      width: 52px;
+      text-align: right;
+    }
+
+    .rec-timer {
       font-size: 13px;
-      color: rgba(255, 255, 255, 0.8);
+      font-family: monospace;
+      font-weight: 600;
+      color: var(--text-main);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .hud-text-preview {
+      font-size: 13px;
+      color: var(--text-main);
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 6px 12px;
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .hud-emotion-pill {
+      font-size: 10px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-color);
+      padding: 1px 6px;
+      border-radius: 10px;
+      margin-left: 8px;
+    }
+
+    /* ─── 视图 B：语料清洗工作台 ─── */
+    #workbench-view {
+      display: none;
+      flex-direction: column;
+      height: calc(100% - 44px);
+      overflow: hidden;
+    }
+
+    .workbench-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(0, 0, 0, 0.15);
+      border-bottom: 1px solid var(--border-subtle);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .stats-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .stat-item strong {
+      color: var(--text-main);
+      font-size: 13px;
+      margin-left: 3px;
+    }
+
+    .filter-group {
+      display: flex;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 2px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .filter-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .filter-btn.active {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .btn-action {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .btn-action:hover {
+      background: rgba(255, 255, 255, 0.16);
+      border-color: var(--accent-color);
+    }
+
+    .btn-action.primary {
+      background: var(--accent-gradient);
+      color: #fff;
+      border: none;
+      font-weight: 500;
+    }
+
+    .btn-action.primary:hover {
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+    }
+
+    .keyboard-hint {
+      padding: 6px 16px;
+      background: rgba(56, 189, 248, 0.05);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11px;
+      color: var(--accent-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .table-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 16px;
+    }
+
+    .utterance-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.15s;
+    }
+
+    .utterance-card:hover {
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .utterance-card.focused {
+      border-color: var(--accent-color);
+      box-shadow: 0 0 14px rgba(56, 189, 248, 0.15);
+    }
+
+    .utterance-card.verified {
+      border-left: 3px solid var(--success);
+    }
+
+    .utterance-card.clipping {
+      border-left: 3px solid var(--danger);
+    }
+
+    .play-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.15s;
+    }
+
+    .play-btn:hover {
+      background: var(--accent-color);
+      color: #000;
+      transform: scale(1.05);
+    }
+
+    .card-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 140px;
+      flex-shrink: 0;
+    }
+
+    .card-id {
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--text-dim);
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .settings-input, .settings-select {
+    .card-tags {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .tag {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+    }
+
+    .tag.clipping-tag {
+      background: rgba(244, 63, 94, 0.2);
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    .card-input-wrapper {
       flex: 1;
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      color: #fff;
-      padding: 6px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .card-text-input {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-subtle);
       border-radius: 6px;
+      color: var(--text-main);
+      padding: 6px 10px;
+      font-size: 13px;
+      outline: none;
+      width: 100%;
+      transition: border-color 0.15s;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    .card-text-input:focus {
+      border-color: var(--accent-color);
+      background: rgba(0, 0, 0, 0.4);
+    }
+
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* ─── 导出模态窗 ─── */
+    .modal-backdrop {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .modal-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      width: 480px;
+      padding: 20px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .modal-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .form-input {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-main);
+      padding: 6px 10px;
       font-size: 12px;
       outline: none;
-      transition: border-color 0.2s;
-    }
-    .settings-input:focus, .settings-select:focus {
-      border-color: var(--accent-color);
-    }
-    .settings-select option {
-      background: #1c1e2b;
-      color: #fff;
+      user-select: text;
+      -webkit-user-select: text;
     }
 
-    .save-btn {
-      background: var(--accent-color);
-      color: #111;
-      border: none;
-      padding: 6px 14px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-    .save-btn:hover {
-      opacity: 0.9;
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 8px;
     }
 
-    .settings-tip {
-      font-size: 11px;
-      color: var(--text-muted);
-      line-height: 1.4;
+    /* 滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 3px;
     }
   </style>
 </head>
 <body>
-
-  <div class="hud-window" id="hudWindow">
-    <!-- 顶栏 (拖拽区 + 状态 + 关闭与设置等按钮) -->
-    <header class="hud-header" id="dragHeader">
-      <div class="header-left">
-        <span class="brand-title">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-          Sub-Pilot HUD
-        </span>
-        <div class="status-indicator">
-          <div class="status-dot" id="statusDot"></div>
-          <span id="statusText">连接中</span>
+  <div class="app-container">
+    <!-- 顶栏 -->
+    <div class="header-bar" id="drag-region">
+      <div class="brand-section">
+        <div class="brand-icon">VF</div>
+        <div class="brand-title">轻语集 (VoiceForge Mini)</div>
+        <div class="status-badge listening" id="status-badge">
+          <div class="status-dot"></div>
+          <span id="status-text">就绪</span>
         </div>
       </div>
 
       <div class="header-actions">
-        <!-- 字体大小切换 -->
-        <button class="icon-btn" id="fontSizeBtn" title="调整字号 (小/中/大/特大)">🔠</button>
-        <!-- 背景透明度切换 -->
-        <button class="icon-btn" id="opacityBtn" title="切换透明极简模式">🌓</button>
-        <!-- 鼠标穿透开关 -->
-        <button class="icon-btn" id="passthroughBtn" title="鼠标穿透锁定 (按 F8 解除)">🎯</button>
-        <!-- 设置按钮 -->
-        <button class="icon-btn" id="settingsToggleBtn" title="打开/关闭设置">⚙️</button>
-        <!-- 关闭窗口按钮 -->
-        <button class="icon-btn close-btn" id="closeBtn" title="关闭悬浮字幕">✕</button>
-      </div>
-    </header>
-
-    <!-- 字幕显示主区域 -->
-    <main class="hud-body" id="hudBody">
-      <div class="sub-original">
-        <span class="lang-badge" id="langBadge">READY</span>
-        <span class="original-text" id="originalText">等待音频信号输入...</span>
-      </div>
-      <div class="sub-translation" id="translatedText">
-        Sub-Pilot 实时多语言字幕就绪
-      </div>
-    </main>
-
-    <!-- 设置抽屉面板 -->
-    <div class="settings-panel" id="settingsPanel">
-      <div class="settings-row">
-        <span class="settings-label">服务地址:</span>
-        <input type="text" class="settings-input" id="serverUrlInput" placeholder="ws://192.168.x.x:8765/v1/audio/stream">
-        <button class="save-btn" id="saveUrlBtn">保存</button>
-      </div>
-
-      <div class="settings-row">
-        <span class="settings-label">目标语种:</span>
-        <select class="settings-select" id="languageSelect">
-          <option value="auto">🌐 自动识别</option>
-          <option value="ja">🇯🇵 日语 (追番/生肉)</option>
-          <option value="en">🇺🇸 英语 (美剧/公开课/会议)</option>
-          <option value="zh">🇨🇳 中文 (仅原文字幕)</option>
-          <option value="ko">🇰🇷 韩语</option>
+        <!-- 采集模式切换 -->
+        <select class="mode-select" id="mode-select" title="采集模式">
+          <option value="continuous_vad">🎙️ 连续 VAD 自动切句</option>
+          <option value="silent_deferred">🤫 静默采集（纯切片，极省资源）</option>
+          <option value="silent_realtime">⚡ 静默采集（后台实时 ASR）</option>
+          <option value="push_to_talk">🛑 按住说话 (Push-to-Talk)</option>
         </select>
+
+        <!-- 一键消音 (Panic Mute) -->
+        <button class="btn-icon" id="mute-btn" title="紧急物理消音 (Panic Mute)">🎙️</button>
+
+        <!-- 视图切换：Mini HUD / 语料工作台 -->
+        <button class="btn-icon" id="view-toggle-btn" title="切换视图模式 (HUD / 工作台)">🪟</button>
+
+        <!-- 打开存储目录 -->
+        <button class="btn-icon" id="folder-btn" title="打开语料库文件夹">📁</button>
+
+        <!-- 最小化/隐藏 -->
+        <button class="btn-icon danger" id="close-btn" title="隐藏至托盘">×</button>
+      </div>
+    </div>
+
+    <!-- 视图 A：Mini HUD 悬浮胶囊 -->
+    <div id="hud-view">
+      <div class="hud-metrics">
+        <div class="level-meter-wrapper">
+          <div class="level-bar-bg">
+            <div class="level-bar-fill" id="hud-level-fill"></div>
+          </div>
+          <div class="dbfs-text" id="hud-dbfs">-100.0 dB</div>
+        </div>
+        <div class="rec-timer" id="hud-timer">00.0s</div>
       </div>
 
-      <div class="settings-row">
-        <span class="settings-label">翻译模式:</span>
-        <select class="settings-select" id="translateToggle">
-          <option value="true">✨ 启用双语智能翻译 (ASR + 大模型)</option>
-          <option value="false">⚡ 仅 ASR 识别 (极致超低延迟)</option>
-        </select>
+      <div class="hud-text-preview" id="hud-preview">
+        <span id="hud-last-text">等待语音录入...</span>
+        <span class="hud-emotion-pill" id="hud-emotion-badge" style="display:none;">平静</span>
+      </div>
+    </div>
+
+    <!-- 视图 B：语料清洗工作台 -->
+    <div id="workbench-view">
+      <!-- 统计与操作工具栏 -->
+      <div class="workbench-toolbar">
+        <div class="stats-group">
+          <div class="stat-item">有效切片:<strong id="stat-count">0</strong> 条</div>
+          <div class="stat-item">总净时长:<strong id="stat-duration">00:00</strong></div>
+          <div class="stat-item">已校验:<strong id="stat-verified">0</strong></div>
+          <div class="stat-item" id="stat-pending-item">待转写:<strong id="stat-pending">0</strong></div>
+        </div>
+
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <div class="filter-group">
+            <button class="filter-btn active" data-filter="all">全部</button>
+            <button class="filter-btn" data-filter="Pending_ASR">待转写</button>
+            <button class="filter-btn" data-filter="Transcribed">待校验</button>
+            <button class="filter-btn" data-filter="Verified">已校验</button>
+          </div>
+
+          <!-- 批量 ASR 按钮 -->
+          <button class="btn-action" id="batch-asr-btn">⚡ 批量转写</button>
+
+          <!-- 导出按钮 -->
+          <button class="btn-action primary" id="open-export-modal-btn">📦 导出训练集</button>
+        </div>
       </div>
 
-      <div class="settings-tip">
-        💡 提示：按住顶栏可自由拖拽位置；右下角/边缘可缩放尺寸；若点击了“鼠标穿透”锁定屏幕，随时按下 <b>F8</b> 键即可退出穿透！
+      <div class="keyboard-hint">
+        <span>💡 <b>盲打流快捷操作</b>：选中行按 [Tab] 试听重播 | 编辑文本后按 [Enter] 确认已校验并跳下一行 | [Delete] 剔除废片</span>
+      </div>
+
+      <!-- 语料列表容器 -->
+      <div class="table-container" id="utterance-list">
+        <!-- 动态生成列表项 -->
       </div>
     </div>
   </div>
 
+  <!-- 导出对话框模态窗 -->
+  <div class="modal-backdrop" id="export-modal">
+    <div class="modal-panel">
+      <div class="modal-title">导出模型训练数据集</div>
+
+      <div class="form-group">
+        <label class="form-label">导出目标框架格式</label>
+        <select class="form-input" id="export-format">
+          <option value="gpt_sovits">GPT-SoVITS 专属 (wavs/ + train.list)</option>
+          <option value="jsonl">JSONL 通用多模态 (HuggingFace / Whisper / LLM)</option>
+          <option value="ljspeech">LJSpeech 经典格式 (wavs/ + metadata.csv)</option>
+          <option value="srt_md">SRT / Markdown 时间轴语料归档</option>
+          <option value="all">全量打包导出全部格式</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">导出目标本地目录路径</label>
+        <input class="form-input" id="export-dir" type="text" placeholder="/Users/.../dataset" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">验证集切分比例 (Val Split Ratio: 0% ~ 20%)</label>
+        <input class="form-input" id="export-val-ratio" type="number" min="0" max="0.3" step="0.05" value="0.1" />
+      </div>
+
+      <div style="display: flex; gap: 16px; font-size: 12px; color: var(--text-muted);">
+        <label><input type="checkbox" id="export-only-verified" checked /> 仅导出已校验 (Verified) 样本</label>
+        <label><input type="checkbox" id="export-copy-audio" checked /> 复制 WAV 音频到目标目录</label>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-action" id="close-export-modal-btn">取消</button>
+        <button class="btn-action primary" id="confirm-export-btn">开始导出</button>
+      </div>
+    </div>
+  </div>
+
+  <audio id="audio-player"></audio>
+
   <script>
-    // ── Tauri API 探测与包装 ──────────────────────────────────────
-    const hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-    const invoke = hasTauri ? window.__TAURI__.core.invoke : async () => {};
+    const { invoke } = window.__TAURI__.core;
 
-    // DOM 元素引用
-    const hudWindow = document.getElementById('hudWindow');
-    const dragHeader = document.getElementById('dragHeader');
-    const statusDot = document.getElementById('statusDot');
-    const statusText = document.getElementById('statusText');
-    const langBadge = document.getElementById('langBadge');
-    const originalText = document.getElementById('originalText');
-    const translatedText = document.getElementById('translatedText');
+    let currentViewMode = "hud"; // "hud" | "workbench"
+    let currentFilter = "all";
+    let utterances = [];
+    let focusedIndex = 0;
+    const audioPlayer = document.getElementById("audio-player");
 
-    const fontSizeBtn = document.getElementById('fontSizeBtn');
-    const opacityBtn = document.getElementById('opacityBtn');
-    const passthroughBtn = document.getElementById('passthroughBtn');
-    const settingsToggleBtn = document.getElementById('settingsToggleBtn');
-    const closeBtn = document.getElementById('closeBtn');
-
-    const settingsPanel = document.getElementById('settingsPanel');
-    const serverUrlInput = document.getElementById('serverUrlInput');
-    const saveUrlBtn = document.getElementById('saveUrlBtn');
-    const languageSelect = document.getElementById('languageSelect');
-    const translateToggle = document.getElementById('translateToggle');
-
-    // 字号循环
-    const fontSizes = ['18px', '22px', '26px', '32px'];
-    let currentFontSizeIdx = 1;
-
-    // ── 拖拽窗口与窗口关闭 ──────────────────────────────────────────
-    dragHeader.addEventListener('mousedown', (e) => {
-      // 避免点击按钮或设置时触发拖拽
-      if (e.target.closest('.header-actions') || e.target.closest('.settings-panel')) return;
-      if (hasTauri) {
-        invoke('start_dragging').catch(console.error);
-      }
+    // ── 窗口拖拽与基础操作 ──
+    document.getElementById("drag-region").addEventListener("mousedown", (e) => {
+      if (e.target.closest("button") || e.target.closest("select")) return;
+      invoke("start_dragging");
     });
 
-    closeBtn.addEventListener('click', () => {
-      if (hasTauri) {
-        invoke('close_window').catch(console.error);
+    document.getElementById("close-btn").addEventListener("click", () => {
+      invoke("close_window");
+    });
+
+    document.getElementById("folder-btn").addEventListener("click", () => {
+      invoke("open_data_directory");
+    });
+
+    // ── 视图切换 ──
+    const viewToggleBtn = document.getElementById("view-toggle-btn");
+    const hudView = document.getElementById("hud-view");
+    const workbenchView = document.getElementById("workbench-view");
+
+    viewToggleBtn.addEventListener("click", async () => {
+      currentViewMode = currentViewMode === "hud" ? "workbench" : "hud";
+      if (currentViewMode === "workbench") {
+        hudView.style.display = "none";
+        workbenchView.style.display = "flex";
+        viewToggleBtn.classList.add("active");
+        await invoke("switch_view_mode", { mode: "workbench" });
+        loadUtterances();
       } else {
-        window.close();
+        hudView.style.display = "flex";
+        workbenchView.style.display = "none";
+        viewToggleBtn.classList.remove("active");
+        await invoke("switch_view_mode", { mode: "hud" });
       }
     });
 
-    // ── 设置抽屉开关 ──────────────────────────────────────────────
-    settingsToggleBtn.addEventListener('click', () => {
-      const isOpen = settingsPanel.classList.toggle('open');
-      settingsToggleBtn.classList.toggle('active', isOpen);
+    // ── 采集模式切换 ──
+    const modeSelect = document.getElementById("mode-select");
+    modeSelect.addEventListener("change", async (e) => {
+      await invoke("set_capture_mode", { mode: e.target.value });
     });
 
-    // ── 字号调节 ──────────────────────────────────────────────────
-    fontSizeBtn.addEventListener('click', () => {
-      currentFontSizeIdx = (currentFontSizeIdx + 1) % fontSizes.length;
-      translatedText.style.fontSize = fontSizes[currentFontSizeIdx];
+    // ── 消音控制 ──
+    const muteBtn = document.getElementById("mute-btn");
+    muteBtn.addEventListener("click", async () => {
+      const isMuted = await invoke("toggle_mute");
+      updateMuteUi(isMuted);
     });
 
-    // ── 背景透明度切换 ────────────────────────────────────────────
-    opacityBtn.addEventListener('click', () => {
-      const isTransparent = hudWindow.classList.toggle('transparent-mode');
-      opacityBtn.classList.toggle('active', isTransparent);
-    });
-
-    // ── 鼠标穿透模式 ──────────────────────────────────────────────
-    passthroughBtn.addEventListener('click', async () => {
-      if (hasTauri) {
-        try {
-          await invoke('set_passthrough', { enabled: true });
-          passthroughBtn.classList.add('active');
-        } catch (e) {
-          console.error(e);
-        }
+    function updateMuteUi(isMuted) {
+      if (isMuted) {
+        muteBtn.textContent = "🔇";
+        muteBtn.classList.add("active");
       } else {
-        alert('鼠标穿透需在桌面客户端中生效 (按 F8 恢复鼠标可点)');
+        muteBtn.textContent = "🎙️";
+        muteBtn.classList.remove("active");
       }
-    });
+    }
 
-    // ── 保存设置 ──────────────────────────────────────────────────
-    saveUrlBtn.addEventListener('click', async () => {
-      const url = serverUrlInput.value.trim();
-      if (!url) return;
-      if (hasTauri) {
-        try {
-          await invoke('set_server_url', { url });
-          saveUrlBtn.innerText = '已更新';
-          setTimeout(() => { saveUrlBtn.innerText = '保存'; }, 1500);
-        } catch (e) {
-          alert('设置失败: ' + e);
-        }
-      }
-    });
-
-    languageSelect.addEventListener('change', async () => {
-      const lang = languageSelect.value;
-      if (hasTauri) {
-        try {
-          await invoke('set_language', { language: lang });
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    });
-
-    translateToggle.addEventListener('change', async () => {
-      const enabled = translateToggle.value === 'true';
-      if (hasTauri) {
-        try {
-          await invoke('set_translation_enabled', { enabled });
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    });
-
-    // ── 定时轮询客户端状态快照 ────────────────────────────────────
-    async function syncSnapshot() {
-      if (!hasTauri) return;
+    // ── 状态轮询 (高频 100ms 刷新波形与状态) ──
+    async function pollStatus() {
       try {
-        const snap = await invoke('get_snapshot');
-        if (snap) {
-          // 状态连接灯
-          statusDot.className = 'status-dot';
-          if (snap.status === 'connected') {
-            statusDot.classList.add('connected');
-            statusText.innerText = '已连接';
-          } else if (snap.status === 'connecting') {
-            statusDot.classList.add('connecting');
-            statusText.innerText = '连接中...';
-          } else {
-            statusText.innerText = '离线/重试中';
-          }
+        const status = await invoke("get_app_status");
 
-          // 鼠标穿透
-          passthroughBtn.classList.toggle('active', snap.passthrough);
+        // 状态徽标更新
+        const statusBadge = document.getElementById("status-badge");
+        const statusText = document.getElementById("status-text");
+        statusBadge.className = "status-badge " + status.status;
 
-          // 同步输入框 (仅在未编辑时)
-          if (!serverUrlInput.matches(':focus') && snap.serverUrl) {
-            serverUrlInput.value = snap.serverUrl;
-          }
-          if (snap.language && languageSelect.value !== snap.language) {
-            languageSelect.value = snap.language;
-          }
-          if (snap.translationEnabled !== undefined) {
-            translateToggle.value = String(snap.translationEnabled);
-          }
-
-          // 字幕渲染 (LCP 算法平滑向前打字，译文稳定单向切换)
-          if (snap.subtitle && snap.subtitle.text) {
-            const sub = snap.subtitle;
-            const lang = (sub.language || snap.language || 'AUTO').toUpperCase();
-            langBadge.innerText = lang;
-
-            const isPartial = sub.isFinal === false || sub.stage === 'partial';
-
-            // 原文行：流式打字追加闪烁光标，定稿整句展示，绝不回弹抖动
-            if (isPartial) {
-              originalText.innerHTML = escapeHtml(sub.text) + '<span class="typing-cursor">▎</span>';
-            } else {
-              originalText.innerText = sub.text;
-            }
-
-            // 译文行：有翻译显示翻译；若新一句翻译还在生成中，继续平滑展示上一句译文，绝不降级回跳成外语原文！
-            const isChinese = lang === 'ZH' || lang === 'YUE';
-            const newTrans = isChinese ? sub.text : sub.translated;
-            if (newTrans && translatedText.innerText !== newTrans) {
-              translatedText.innerText = newTrans;
-              translatedText.classList.remove('fade-update');
-              void translatedText.offsetWidth; // 触发 reflow 重置动画
-              translatedText.classList.add('fade-update');
-            }
-          }
+        if (status.is_muted) {
+          statusText.textContent = "已消音";
+        } else if (status.is_silent) {
+          statusText.textContent = "静默采集";
+        } else if (status.status === "recording") {
+          statusText.textContent = "正在录制";
+        } else if (status.status === "listening") {
+          statusText.textContent = "监听中";
+        } else {
+          statusText.textContent = "待机空闲";
         }
-      } catch (e) {
-        console.error('syncSnapshot error:', e);
+
+        // HUD 电平条更新
+        const fillPercent = Math.min(100, Math.max(0, (status.peak_dbfs + 60) * (100 / 60)));
+        document.getElementById("hud-level-fill").style.width = fillPercent + "%";
+        document.getElementById("hud-dbfs").textContent = status.peak_dbfs.toFixed(1) + " dB";
+
+        // HUD 录制计时器
+        if (status.current_duration_s > 0) {
+          document.getElementById("hud-timer").textContent = status.current_duration_s.toFixed(1) + "s";
+          document.getElementById("hud-timer").style.color = "var(--danger)";
+        } else {
+          document.getElementById("hud-timer").textContent = "00.0s";
+          document.getElementById("hud-timer").style.color = "var(--text-main)";
+        }
+
+        // 待转写数量统计
+        document.getElementById("stat-pending").textContent = status.pending_asr_count;
+        const batchBtn = document.getElementById("batch-asr-btn");
+        if (status.pending_asr_count > 0) {
+          batchBtn.textContent = `⚡ 批量转写 (${status.pending_asr_count})`;
+          batchBtn.style.display = "inline-flex";
+        } else {
+          batchBtn.textContent = "⚡ 批量转写";
+        }
+
+      } catch (err) {
+        console.error("Poll status error:", err);
+      }
+    }
+    setInterval(pollStatus, 120);
+
+    // ── 语料加载与渲染 ──
+    async function loadUtterances() {
+      try {
+        utterances = await invoke("list_utterances", {
+          sessionId: null,
+          statusFilter: currentFilter,
+        });
+        renderUtteranceList();
+        updateStats();
+      } catch (err) {
+        console.error("Failed to load utterances:", err);
       }
     }
 
-    function escapeHtml(str) {
-      if (!str) return '';
-      return str.replace(/[&<>"']/g, m => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-      }[m]));
+    function updateStats() {
+      const valid = utterances.filter(u => u.status !== "Rejected");
+      const totalMs = valid.reduce((acc, u) => acc + u.duration_ms, 0);
+      const verified = valid.filter(u => u.verified).length;
+
+      document.getElementById("stat-count").textContent = valid.length;
+      const totalSec = Math.floor(totalMs / 1000);
+      const mins = Math.floor(totalSec / 60);
+      const secs = totalSec % 60;
+      document.getElementById("stat-duration").textContent =
+        `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+      document.getElementById("stat-verified").textContent = `${verified} / ${valid.length}`;
     }
 
-    if (hasTauri) {
-      setInterval(syncSnapshot, 50);
-      syncSnapshot();
+    function renderUtteranceList() {
+      const listEl = document.getElementById("utterance-list");
+      listEl.innerHTML = "";
+
+      if (utterances.length === 0) {
+        listEl.innerHTML = `<div style="text-align:center; padding: 40px; color: var(--text-dim); font-size: 13px;">暂无语音切片，请对着麦克风说话或切换模式开始录制</div>`;
+        return;
+      }
+
+      utterances.forEach((u, idx) => {
+        const card = document.createElement("div");
+        card.className = "utterance-card";
+        if (u.verified) card.classList.add("verified");
+        if (u.peak_dbfs >= -0.3) card.classList.add("clipping");
+        if (idx === focusedIndex) card.classList.add("focused");
+        card.dataset.index = idx;
+
+        const durSec = (u.duration_ms / 1000).toFixed(1) + "s";
+        const isClipping = u.peak_dbfs >= -0.3;
+
+        card.innerHTML = `
+          <button class="play-btn" data-id="${u.id}" data-path="${u.audio_filepath}" title="播放/重播 (Tab)">▶</button>
+          <div class="card-meta">
+            <div class="card-id" title="${u.id}">${u.id}</div>
+            <div class="card-tags">
+              <span class="tag">${durSec}</span>
+              <span class="tag">${u.peak_dbfs.toFixed(1)}dB</span>
+              ${isClipping ? '<span class="tag clipping-tag">削波!</span>' : ''}
+              ${u.emotion ? `<span class="tag" style="color:var(--accent-color)">${u.emotion}</span>` : ''}
+            </div>
+          </div>
+          <div class="card-input-wrapper">
+            <input type="text" class="card-text-input" value="${escapeHtml(u.text)}"
+              data-id="${u.id}" placeholder="${u.status === 'Pending_ASR' ? '等待离线 ASR 转写中...' : '点击编辑文本内容...'}" />
+          </div>
+          <div class="card-actions">
+            <button class="btn-action ${u.verified ? 'primary' : ''}" style="padding: 4px 8px; font-size: 11px;"
+              data-action="verify" data-id="${u.id}">${u.verified ? '✓ 已校验' : '确认'}</button>
+            <button class="btn-action" style="padding: 4px 8px; font-size: 11px; color: var(--danger);"
+              data-action="delete" data-id="${u.id}">🗑️</button>
+          </div>
+        `;
+
+        // 播放按钮
+        card.querySelector(".play-btn").addEventListener("click", () => playUtteranceAudio(u.audio_filepath));
+
+        // 文本框 Enter / Tab 交互
+        const input = card.querySelector(".card-text-input");
+        input.addEventListener("focus", () => {
+          focusedIndex = idx;
+          highlightFocusedCard();
+        });
+
+        input.addEventListener("keydown", async (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            // 保存并标记已校验
+            await invoke("update_utterance_text", {
+              id: u.id,
+              text: input.value,
+              textNormalized: null,
+              verified: true,
+            });
+            u.text = input.value;
+            u.verified = true;
+            card.classList.add("verified");
+            // 跳下一行并播放
+            focusNextUtterance(idx);
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+            playUtteranceAudio(u.audio_filepath);
+          }
+        });
+
+        // 校验按钮
+        card.querySelector('[data-action="verify"]').addEventListener("click", async () => {
+          await invoke("mark_utterance_status", { id: u.id, status: u.verified ? "Transcribed" : "Verified" });
+          u.verified = !u.verified;
+          card.classList.toggle("verified", u.verified);
+          updateStats();
+        });
+
+        // 剔除删除按钮
+        card.querySelector('[data-action="delete"]').addEventListener("click", async () => {
+          await invoke("delete_utterance", { id: u.id });
+          utterances.splice(idx, 1);
+          renderUtteranceList();
+          updateStats();
+        });
+
+        listEl.appendChild(card);
+      });
     }
+
+    function highlightFocusedCard() {
+      document.querySelectorAll(".utterance-card").forEach((c, idx) => {
+        c.classList.toggle("focused", idx === focusedIndex);
+      });
+    }
+
+    function focusNextUtterance(currentIndex) {
+      const nextIndex = currentIndex + 1;
+      if (nextIndex < utterances.length) {
+        focusedIndex = nextIndex;
+        highlightFocusedCard();
+        const nextInput = document.querySelector(`.utterance-card[data-index="${nextIndex}"] .card-text-input`);
+        if (nextInput) {
+          nextInput.focus();
+          playUtteranceAudio(utterances[nextIndex].audio_filepath);
+        }
+      }
+    }
+
+    async function playUtteranceAudio(filepath) {
+      try {
+        const dataUrl = await invoke("read_audio_base64", { filepath });
+        audioPlayer.src = dataUrl;
+        audioPlayer.play();
+      } catch (err) {
+        console.error("Play audio failed:", err);
+      }
+    }
+
+    function escapeHtml(text) {
+      return (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // ── 筛选切换 ──
+    document.querySelectorAll(".filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentFilter = btn.dataset.filter;
+        loadUtterances();
+      });
+    });
+
+    // ── 批量 ASR ──
+    document.getElementById("batch-asr-btn").addEventListener("click", async () => {
+      try {
+        const count = await invoke("run_batch_asr", { sessionId: null });
+        alert(`已开始后台批量转写 ${count} 条切片，将在数秒内逐步完成！`);
+        setTimeout(loadUtterances, 1500);
+      } catch (err) {
+        alert("批量转写失败: " + err);
+      }
+    });
+
+    // ── 导出模态窗 ──
+    const exportModal = document.getElementById("export-modal");
+    document.getElementById("open-export-modal-btn").addEventListener("click", () => {
+      exportModal.style.display = "flex";
+      // 默认填充建议路径
+      if (!document.getElementById("export-dir").value) {
+        document.getElementById("export-dir").value = "~/voiceforge_dataset";
+      }
+    });
+
+    document.getElementById("close-export-modal-btn").addEventListener("click", () => {
+      exportModal.style.display = "none";
+    });
+
+    document.getElementById("confirm-export-btn").addEventListener("click", async () => {
+      const format = document.getElementById("export-format").value;
+      const targetDir = document.getElementById("export-dir").value;
+      const valRatio = parseFloat(document.getElementById("export-val-ratio").value) || 0.1;
+      const onlyVerified = document.getElementById("export-only-verified").checked;
+      const copyAudio = document.getElementById("export-copy-audio").checked;
+
+      if (!targetDir.trim()) {
+        alert("请输入导出目录路径！");
+        return;
+      }
+
+      try {
+        const res = await invoke("export_dataset", {
+          options: {
+            format,
+            targetDir,
+            sessionId: null,
+            onlyVerified,
+            valRatio,
+            copyAudio,
+          }
+        });
+        alert(res);
+        exportModal.style.display = "none";
+      } catch (err) {
+        alert("导出失败: " + err);
+      }
+    });
+
+    // 页面加载时自动初始轮询
+    pollStatus();
   </script>
 </body>
 </html>
