@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -7,7 +8,6 @@ use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 
 use crate::asr::AsrEngine;
 use crate::db::UtteranceRecord;
@@ -25,66 +25,92 @@ pub enum AudioControlCommand {
     Stop,
 }
 
+pub fn log_to_file(data_dir: &Path, msg: &str) {
+    let log_file = data_dir.join("voiceforge.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_file) {
+        use std::io::Write;
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let _ = writeln!(f, "[{}] {}", now, msg);
+    }
+}
+
 #[derive(Clone)]
 pub struct AudioEngineHandle {
-    cmd_tx: mpsc::Sender<AudioControlCommand>,
+    cmd_tx: Sender<AudioControlCommand>,
 }
 
 impl AudioEngineHandle {
     pub fn new(state: AppState) -> Self {
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<AudioControlCommand>(16);
+        let (cmd_tx, cmd_rx) = channel::<AudioControlCommand>();
 
-        // Run audio thread on dedicated OS thread to isolate cpal::Stream (!Send on macOS CoreAudio)
-        std::thread::spawn(move || {
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
+        let state_clone = state.clone();
+        std::thread::Builder::new()
+            .name("voiceforge-audio-worker".into())
+            .spawn(move || {
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+                    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                }
 
-            let mut current_stream: Option<Stream> = None;
-            let mut stop_pipeline_tx: Option<mpsc::Sender<()>> = None;
+                log_to_file(&state_clone.data_dir, "Audio worker thread started successfully");
 
-            while let Some(cmd) = cmd_rx.blocking_recv() {
-                match cmd {
-                    AudioControlCommand::Start(device_name) => {
-                        // Stop any existing stream
-                        if let Some(tx) = stop_pipeline_tx.take() {
-                            let _ = tx.blocking_send(());
-                        }
-                        current_stream = None;
+                let mut current_stream: Option<Stream> = None;
+                let mut stop_pipeline_tx: Option<Sender<()>> = None;
 
-                        match setup_input_stream(&state, device_name.as_deref()) {
-                            Ok((stream, tx)) => {
-                                let _ = stream.play();
-                                current_stream = Some(stream);
-                                stop_pipeline_tx = Some(tx);
-                                state.is_capturing.store(true, Ordering::SeqCst);
-                                *state.last_error.lock().unwrap() = None;
-                                *state.mic_status.lock().unwrap() = MicStatus::Listening;
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        AudioControlCommand::Start(device_name) => {
+                            log_to_file(&state_clone.data_dir, &format!("Received Start command, device: {:?}", device_name));
+                            // Stop existing stream if any
+                            if let Some(tx) = stop_pipeline_tx.take() {
+                                let _ = tx.send(());
                             }
-                            Err(e) => {
-                                let err_msg = format!("无法打开麦克风: {}", e);
-                                eprintln!("{}", err_msg);
-                                *state.last_error.lock().unwrap() = Some(err_msg);
-                                state.is_capturing.store(false, Ordering::SeqCst);
-                                *state.mic_status.lock().unwrap() = MicStatus::Idle;
+                            current_stream = None;
+
+                            match setup_input_stream(&state_clone, device_name.as_deref()) {
+                                Ok((stream, tx)) => {
+                                    if let Err(e) = stream.play() {
+                                        let err_msg = format!("麦克风启动播放失败: {}", e);
+                                        log_to_file(&state_clone.data_dir, &err_msg);
+                                        *state_clone.last_error.lock().unwrap() = Some(err_msg);
+                                        state_clone.is_capturing.store(false, Ordering::SeqCst);
+                                        *state_clone.mic_status.lock().unwrap() = MicStatus::Idle;
+                                    } else {
+                                        log_to_file(&state_clone.data_dir, "Microphone stream successfully running");
+                                        current_stream = Some(stream);
+                                        stop_pipeline_tx = Some(tx);
+                                        state_clone.is_capturing.store(true, Ordering::SeqCst);
+                                        *state_clone.last_error.lock().unwrap() = None;
+                                        *state_clone.mic_status.lock().unwrap() = MicStatus::Listening;
+                                    }
+                                }
+                                Err(e) => {
+                                    let err_msg = format!("无法打开麦克风设备: {}", e);
+                                    log_to_file(&state_clone.data_dir, &err_msg);
+                                    eprintln!("{}", err_msg);
+                                    *state_clone.last_error.lock().unwrap() = Some(err_msg);
+                                    state_clone.is_capturing.store(false, Ordering::SeqCst);
+                                    *state_clone.mic_status.lock().unwrap() = MicStatus::Idle;
+                                }
                             }
                         }
-                    }
-                    AudioControlCommand::Stop => {
-                        if let Some(tx) = stop_pipeline_tx.take() {
-                            let _ = tx.blocking_send(());
+                        AudioControlCommand::Stop => {
+                            log_to_file(&state_clone.data_dir, "Received Stop command");
+                            if let Some(tx) = stop_pipeline_tx.take() {
+                                let _ = tx.send(());
+                            }
+                            if let Some(stream) = current_stream.take() {
+                                let _ = stream.pause();
+                            }
+                            state_clone.is_capturing.store(false, Ordering::SeqCst);
+                            *state_clone.mic_status.lock().unwrap() = MicStatus::Idle;
                         }
-                        if let Some(stream) = current_stream.take() {
-                            let _ = stream.pause();
-                        }
-                        state.is_capturing.store(false, Ordering::SeqCst);
-                        *state.mic_status.lock().unwrap() = MicStatus::Idle;
                     }
                 }
-            }
-        });
+                log_to_file(&state_clone.data_dir, "Audio worker thread exiting");
+            })
+            .expect("Failed to spawn audio worker thread");
 
         Self { cmd_tx }
     }
@@ -110,17 +136,15 @@ impl AudioEngineHandle {
         Ok(list)
     }
 
-    pub async fn start_capture(&self, device_name: Option<String>) -> Result<()> {
+    pub fn start_capture(&self, device_name: Option<String>) -> Result<()> {
         self.cmd_tx
             .send(AudioControlCommand::Start(device_name))
-            .await
             .map_err(|e| anyhow!("Failed to send start audio command: {}", e))
     }
 
-    pub async fn stop_capture(&self) -> Result<()> {
+    pub fn stop_capture(&self) -> Result<()> {
         self.cmd_tx
             .send(AudioControlCommand::Stop)
-            .await
             .map_err(|e| anyhow!("Failed to send stop audio command: {}", e))
     }
 }
@@ -128,7 +152,7 @@ impl AudioEngineHandle {
 fn setup_input_stream(
     state: &AppState,
     device_name: Option<&str>,
-) -> Result<(Stream, mpsc::Sender<()>)> {
+) -> Result<(Stream, Sender<()>)> {
     #[cfg(windows)]
     unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -145,6 +169,9 @@ fn setup_input_stream(
             .ok_or_else(|| anyhow!("No default input device available"))?
     };
 
+    let dev_name = device.name().unwrap_or_else(|_| "Unknown".into());
+    log_to_file(&state.data_dir, &format!("Selected audio device: {}", dev_name));
+
     let default_config = device
         .default_input_config()
         .context("Failed to get default input config")?;
@@ -152,32 +179,38 @@ fn setup_input_stream(
     let channels = default_config.channels();
     let sample_format = default_config.sample_format();
 
-    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<f32>>(100);
-    let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+    log_to_file(&state.data_dir, &format!("Device config: rate={}, channels={}, format={:?}", sample_rate, channels, sample_format));
 
-    let err_fn = |err| eprintln!("Audio stream error: {:?}", err);
+    // Non-blocking sync channel between real-time cpal thread and processing thread
+    let (sample_tx, sample_rx) = sync_channel::<Vec<f32>>(64);
+    let (stop_tx, stop_rx) = channel::<()>();
+
+    let err_fn = move |err| {
+        eprintln!("Audio stream error: {:?}", err);
+    };
+
     let stream_config: StreamConfig = default_config.into();
 
     let stream = match sample_format {
         SampleFormat::F32 => {
-            let tx = audio_tx.clone();
+            let tx = sample_tx.clone();
             device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _| {
                     let mono = downmix_to_mono_f32(data, channels as usize);
-                    let _ = tx.blocking_send(mono);
+                    let _ = tx.try_send(mono);
                 },
                 err_fn,
                 None,
             )?
         }
         SampleFormat::I16 => {
-            let tx = audio_tx.clone();
+            let tx = sample_tx.clone();
             device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _| {
                     let mono = downmix_to_mono_i16(data, channels as usize);
-                    let _ = tx.blocking_send(mono);
+                    let _ = tx.try_send(mono);
                 },
                 err_fn,
                 None,
@@ -187,18 +220,21 @@ fn setup_input_stream(
     };
 
     let state_clone = state.clone();
-    tokio::spawn(async move {
-        run_processing_loop(state_clone, sample_rate, &mut audio_rx, &mut stop_rx).await;
-    });
+    std::thread::Builder::new()
+        .name("voiceforge-dsp-loop".into())
+        .spawn(move || {
+            run_processing_loop(state_clone, sample_rate, sample_rx, stop_rx);
+        })
+        .expect("Failed to spawn dsp processing thread");
 
     Ok((stream, stop_tx))
 }
 
-async fn run_processing_loop(
+fn run_processing_loop(
     state: AppState,
     native_sample_rate: u32,
-    audio_rx: &mut mpsc::Receiver<Vec<f32>>,
-    stop_rx: &mut mpsc::Receiver<()>,
+    sample_rx: Receiver<Vec<f32>>,
+    stop_rx: Receiver<()>,
 ) {
     let vad_path = state.model_dir.join("silero_vad.onnx");
     let mut vad = if vad_path.exists() {
@@ -220,94 +256,92 @@ async fn run_processing_loop(
 
     *state.mic_status.lock().unwrap() = MicStatus::Listening;
 
-    loop {
-        tokio::select! {
-            _ = stop_rx.recv() => {
-                break;
-            }
-            Some(native_mono) = audio_rx.recv() => {
-                // Panic Mute
-                if state.is_muted.load(Ordering::SeqCst) {
-                    *state.mic_status.lock().unwrap() = MicStatus::Muted;
-                    *state.current_peak_dbfs.lock().unwrap() = -100.0;
-                    continue;
+    while let Ok(native_mono) = sample_rx.recv() {
+        // Check stop signal
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+
+        // Panic Mute
+        if state.is_muted.load(Ordering::SeqCst) {
+            *state.mic_status.lock().unwrap() = MicStatus::Muted;
+            *state.current_peak_dbfs.lock().unwrap() = -100.0;
+            continue;
+        }
+
+        // Peak dBFS calculation
+        let peak = native_mono.iter().fold(0.0f32, |acc, &s| acc.max(s.abs()));
+        let peak_dbfs = if peak > 0.00001 {
+            20.0 * peak.log10().max(-100.0)
+        } else {
+            -100.0
+        };
+        *state.current_peak_dbfs.lock().unwrap() = peak_dbfs;
+
+        // Downsample to 16kHz
+        let chunk_16k = resample_to_16k(&native_mono, native_sample_rate);
+        resample_buffer_16k.extend_from_slice(&chunk_16k);
+
+        // Process in 512-sample (32ms) VAD windows
+        while resample_buffer_16k.len() >= 512 {
+            let window: Vec<f32> = resample_buffer_16k.drain(..512).collect();
+
+            if let Some(ref mut detector) = vad {
+                detector.accept_waveform(&window);
+
+                if detector.is_speech_detected() {
+                    if recording_start_time.is_none() {
+                        recording_start_time = Some(Instant::now());
+                        wall_clock_start = Utc::now().to_rfc3339();
+                        session_offset_start_ms = session_start_instant.elapsed().as_millis() as i64;
+                        *state.mic_status.lock().unwrap() = MicStatus::Recording;
+                    }
+                    speech_recording_buffer.extend_from_slice(&window);
+                    let dur_s = recording_start_time.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                    *state.current_recording_duration_s.lock().unwrap() = dur_s;
                 }
 
-                // Peak dBFS calculation
-                let peak = native_mono.iter().fold(0.0f32, |acc, &s| acc.max(s.abs()));
-                let peak_dbfs = if peak > 0.00001 {
-                    20.0 * peak.log10().max(-100.0)
-                } else {
-                    -100.0
-                };
-                *state.current_peak_dbfs.lock().unwrap() = peak_dbfs;
+                while let Some(segment_samples) = detector.pop_segment() {
+                    let duration_ms = (segment_samples.len() as f32 / 16.0) as i64;
+                    let wall_clock_end = Utc::now().to_rfc3339();
+                    let session_offset_end_ms = session_start_instant.elapsed().as_millis() as i64;
 
-                // Downsample to 16kHz
-                let chunk_16k = resample_to_16k(&native_mono, native_sample_rate);
-                resample_buffer_16k.extend_from_slice(&chunk_16k);
+                    *state.current_recording_duration_s.lock().unwrap() = 0.0;
+                    *state.mic_status.lock().unwrap() = MicStatus::Listening;
+                    recording_start_time = None;
 
-                // Process in 512-sample (32ms) VAD windows
-                while resample_buffer_16k.len() >= 512 {
-                    let window: Vec<f32> = resample_buffer_16k.drain(..512).collect();
-
-                    if let Some(ref mut detector) = vad {
-                        detector.accept_waveform(&window);
-
-                        if detector.is_speech_detected() {
-                            if recording_start_time.is_none() {
-                                recording_start_time = Some(Instant::now());
-                                wall_clock_start = Utc::now().to_rfc3339();
-                                session_offset_start_ms = session_start_instant.elapsed().as_millis() as i64;
-                                *state.mic_status.lock().unwrap() = MicStatus::Recording;
-                            }
-                            speech_recording_buffer.extend_from_slice(&window);
-                            let dur_s = recording_start_time.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
-                            *state.current_recording_duration_s.lock().unwrap() = dur_s;
-                        }
-
-                        while let Some(segment_samples) = detector.pop_segment() {
-                            let duration_ms = (segment_samples.len() as f32 / 16.0) as i64;
-                            let wall_clock_end = Utc::now().to_rfc3339();
-                            let session_offset_end_ms = session_start_instant.elapsed().as_millis() as i64;
-
-                            *state.current_recording_duration_s.lock().unwrap() = 0.0;
-                            *state.mic_status.lock().unwrap() = MicStatus::Listening;
-                            recording_start_time = None;
-
-                            // Filter fragments < 600ms
-                            if segment_samples.len() >= 9600 {
-                                save_and_dispatch_utterance(
-                                    &state,
-                                    segment_samples,
-                                    duration_ms,
-                                    wall_clock_start.clone(),
-                                    wall_clock_end,
-                                    session_offset_start_ms,
-                                    session_offset_end_ms,
-                                    peak_dbfs,
-                                );
-                            }
-                            speech_recording_buffer.clear();
-                        }
-                    } else {
-                        // Energy-based fallback: 1.5s windows
-                        speech_recording_buffer.extend_from_slice(&window);
-                        if speech_recording_buffer.len() >= 24000 {
-                            let samples = std::mem::take(&mut speech_recording_buffer);
-                            let now = Utc::now().to_rfc3339();
-                            let end_offset = session_start_instant.elapsed().as_millis() as i64;
-                            save_and_dispatch_utterance(
-                                &state,
-                                samples,
-                                1500,
-                                now.clone(),
-                                now,
-                                end_offset.saturating_sub(1500),
-                                end_offset,
-                                peak_dbfs,
-                            );
-                        }
+                    // Filter fragments < 600ms
+                    if segment_samples.len() >= 9600 {
+                        save_and_dispatch_utterance(
+                            &state,
+                            segment_samples,
+                            duration_ms,
+                            wall_clock_start.clone(),
+                            wall_clock_end,
+                            session_offset_start_ms,
+                            session_offset_end_ms,
+                            peak_dbfs,
+                        );
                     }
+                    speech_recording_buffer.clear();
+                }
+            } else {
+                // Energy-based fallback: 1.5s windows
+                speech_recording_buffer.extend_from_slice(&window);
+                if speech_recording_buffer.len() >= 24000 {
+                    let samples = std::mem::take(&mut speech_recording_buffer);
+                    let now = Utc::now().to_rfc3339();
+                    let end_offset = session_start_instant.elapsed().as_millis() as i64;
+                    save_and_dispatch_utterance(
+                        &state,
+                        samples,
+                        1500,
+                        now.clone(),
+                        now,
+                        end_offset.saturating_sub(1500),
+                        end_offset,
+                        peak_dbfs,
+                    );
                 }
             }
         }

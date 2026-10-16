@@ -11,9 +11,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
-use tauri::{LogicalSize, State, WebviewWindow};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{LogicalSize, Manager, State, WebviewWindow};
 
-use crate::audio::{AudioDeviceInfo, AudioEngineHandle};
+use crate::audio::{log_to_file, AudioDeviceInfo, AudioEngineHandle};
 use crate::db::{SessionRecord, UtteranceRecord};
 use crate::export::{ExportOptions, Exporter};
 use crate::state::{AppState, AppStatusDto, CaptureMode};
@@ -119,26 +121,26 @@ fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
 }
 
 #[tauri::command]
-async fn start_recording(
+fn start_recording(
     device_name: Option<String>,
-    engine: State<'_, AudioEngineHandle>,
+    engine: State<AudioEngineHandle>,
 ) -> Result<(), String> {
-    engine.start_capture(device_name).await.map_err(|e| e.to_string())
+    engine.start_capture(device_name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn stop_recording(
-    engine: State<'_, AudioEngineHandle>,
+fn stop_recording(
+    engine: State<AudioEngineHandle>,
 ) -> Result<(), String> {
-    engine.stop_capture().await.map_err(|e| e.to_string())
+    engine.stop_capture().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn select_input_device(
+fn select_input_device(
     device_name: Option<String>,
-    engine: State<'_, AudioEngineHandle>,
+    engine: State<AudioEngineHandle>,
 ) -> Result<(), String> {
-    engine.start_capture(device_name).await.map_err(|e| e.to_string())
+    engine.start_capture(device_name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -334,6 +336,12 @@ fn open_model_directory(state: State<Arc<AppState>>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_log_contents(state: State<Arc<AppState>>) -> String {
+    let log_file = state.data_dir.join("voiceforge.log");
+    std::fs::read_to_string(log_file).unwrap_or_else(|_| "暂无错误日志记录".into())
+}
+
 // ── Application Entry ─────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -341,6 +349,7 @@ pub fn run() {
     let data_dir = get_data_dir();
     let model_dir = find_model_dir(&data_dir);
 
+    log_to_file(&data_dir, "VoiceForge Mini App starting up");
     println!("📂 VoiceForge Mini Data Dir: {:?}", data_dir);
     println!("🤖 VoiceForge Mini Model Dir: {:?}", model_dir);
 
@@ -352,6 +361,62 @@ pub fn run() {
     let audio_engine = AudioEngineHandle::new((*state).clone());
 
     tauri::Builder::default()
+        .setup(|app| {
+            // 系统托盘初始化
+            let show_i = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+            let hide_i = MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?;
+            let quit_i = MenuItemBuilder::with_id("quit", "退出轻语集").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&show_i, &hide_i, &quit_i]).build()?;
+
+            if let Some(icon) = app.default_window_icon() {
+                let _tray = TrayIconBuilder::new()
+                    .icon(icon.clone())
+                    .menu(&menu)
+                    .tooltip("轻语集 (VoiceForge Mini) - 本地语音采集")
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| {
+                        match event.id().as_ref() {
+                            "show" => {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    let _ = w.show();
+                                    let _ = w.unminimize();
+                                    let _ = w.set_focus();
+                                }
+                            }
+                            "hide" => {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    let _ = w.hide();
+                                }
+                            }
+                            "quit" => {
+                                app.exit(0);
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(w) = app.get_webview_window("main") {
+                                if w.is_visible().unwrap_or(false) {
+                                    let _ = w.hide();
+                                } else {
+                                    let _ = w.show();
+                                    let _ = w.unminimize();
+                                    let _ = w.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
+            Ok(())
+        })
         .manage(state)
         .manage(audio_engine)
         .invoke_handler(tauri::generate_handler![
@@ -379,6 +444,7 @@ pub fn run() {
             close_window,
             open_data_directory,
             open_model_directory,
+            get_log_contents,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VoiceForge Mini");

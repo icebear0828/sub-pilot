@@ -511,18 +511,24 @@
         <!-- 打开语料文件夹 -->
         <button class="btn-icon" id="folder-btn" title="打开本地语料库目录">📁</button>
 
+        <!-- 复制日志 -->
+        <button class="btn-icon" id="log-btn" title="一键复制系统调试日志">📋</button>
+
         <!-- 最小化到任务栏 -->
         <button class="btn-icon" id="minimize-btn" title="最小化到任务栏">—</button>
 
         <!-- 隐藏至托盘 -->
-        <button class="btn-icon danger" id="close-btn" title="关闭并隐藏至系统托盘 (后台继续静默录音)">×</button>
+        <button class="btn-icon danger" id="close-btn" title="隐藏至右下角系统托盘 (后台继续静默录音)">×</button>
       </div>
     </div>
 
     <!-- 异常 / 模型状态条 -->
     <div class="banner-alert" id="banner-alert">
       <span id="banner-text">💡 提示：尚未检测到 SenseVoice 模型，语音将正常无损录制为 WAV 切片。</span>
-      <button class="banner-btn" id="open-model-btn">打开模型文件夹</button>
+      <div style="display:flex; gap:6px;">
+        <button class="banner-btn" id="copy-err-btn" style="display:none;">📋 复制报错</button>
+        <button class="banner-btn" id="open-model-btn">打开模型文件夹</button>
+      </div>
     </div>
 
     <!-- 视图 A：Mini HUD 悬浮胶囊 -->
@@ -620,6 +626,26 @@
     document.getElementById("folder-btn").addEventListener("click", () => invoke("open_data_directory"));
     document.getElementById("open-model-btn").addEventListener("click", () => invoke("open_model_directory"));
 
+    document.getElementById("log-btn").addEventListener("click", async () => {
+      try {
+        const logs = await invoke("get_log_contents");
+        await navigator.clipboard.writeText(logs);
+        alert("已成功复制系统调试日志到剪贴板！可以直接粘贴。");
+      } catch (e) {
+        alert("复制日志失败: " + e);
+      }
+    });
+
+    document.getElementById("copy-err-btn").addEventListener("click", async () => {
+      try {
+        const text = document.getElementById("banner-text").textContent;
+        await navigator.clipboard.writeText(text);
+        alert("已复制错误信息！");
+      } catch (e) {
+        alert("复制失败: " + e);
+      }
+    });
+
     // ── 录音核心大按钮点击 ──
     recordBtn.addEventListener("click", async () => {
       try {
@@ -687,9 +713,11 @@
     function showError(msg) {
       const banner = document.getElementById("banner-alert");
       const text = document.getElementById("banner-text");
+      const copyBtn = document.getElementById("copy-err-btn");
       banner.className = "banner-alert error";
       banner.style.display = "flex";
       text.textContent = msg;
+      if (copyBtn) copyBtn.style.display = "inline-block";
     }
 
     // ── 状态轮询 ──
@@ -737,14 +765,17 @@
         // 错误及模型提示
         const banner = document.getElementById("banner-alert");
         const bannerText = document.getElementById("banner-text");
+        const copyErrBtn = document.getElementById("copy-err-btn");
         if (s.error_message) {
           banner.className = "banner-alert error";
           banner.style.display = "flex";
           bannerText.textContent = s.error_message;
+          if (copyErrBtn) copyErrBtn.style.display = "inline-block";
         } else if (!s.model_ready) {
           banner.className = "banner-alert";
           banner.style.display = "flex";
           bannerText.textContent = "💡 提示：尚未检测到 SenseVoice 模型，语音将正常无损切片保存为 WAV。";
+          if (copyErrBtn) copyErrBtn.style.display = "none";
         } else {
           banner.style.display = "none";
         }
