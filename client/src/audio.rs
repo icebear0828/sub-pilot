@@ -34,6 +34,12 @@ pub fn log_to_file(data_dir: &Path, msg: &str) {
     }
 }
 
+pub struct AsrTask {
+    pub utt_id: String,
+    pub samples: Vec<f32>,
+    pub sample_rate: i32,
+}
+
 #[derive(Clone)]
 pub struct AudioEngineHandle {
     cmd_tx: Sender<AudioControlCommand>,
@@ -42,8 +48,30 @@ pub struct AudioEngineHandle {
 impl AudioEngineHandle {
     pub fn new(state: AppState) -> Self {
         let (cmd_tx, cmd_rx) = channel::<AudioControlCommand>();
+        let (asr_tx, asr_rx) = channel::<AsrTask>();
+
+        // Spawn dedicated, non-blocking ASR worker thread
+        let state_for_asr = state.clone();
+        let data_dir_asr = state.data_dir.clone();
+        std::thread::Builder::new()
+            .name("voiceforge-asr-worker".into())
+            .spawn(move || {
+                log_to_file(&data_dir_asr, "ASR worker thread started successfully");
+                while let Ok(task) = asr_rx.recv() {
+                    let state_ref = &state_for_asr;
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_asr_for_utterance(state_ref, &task.utt_id, &task.samples, task.sample_rate);
+                    }));
+                    if let Err(e) = res {
+                        log_to_file(&data_dir_asr, &format!("ASR worker panicked on task {}: {:?}", task.utt_id, e));
+                    }
+                }
+                log_to_file(&data_dir_asr, "ASR worker thread exiting");
+            })
+            .expect("Failed to spawn asr worker thread");
 
         let state_clone = state.clone();
+        let asr_tx_for_worker = asr_tx.clone();
         std::thread::Builder::new()
             .name("voiceforge-audio-worker".into())
             .spawn(move || {
@@ -68,7 +96,7 @@ impl AudioEngineHandle {
                             }
                             current_stream = None;
 
-                            match setup_input_stream(&state_clone, device_name.as_deref()) {
+                            match setup_input_stream(&state_clone, device_name.as_deref(), asr_tx_for_worker.clone()) {
                                 Ok((stream, tx)) => {
                                     if let Err(e) = stream.play() {
                                         let err_msg = format!("麦克风启动播放失败: {}", e);
@@ -152,6 +180,7 @@ impl AudioEngineHandle {
 fn setup_input_stream(
     state: &AppState,
     device_name: Option<&str>,
+    asr_tx: Sender<AsrTask>,
 ) -> Result<(Stream, Sender<()>)> {
     #[cfg(windows)]
     unsafe {
@@ -220,10 +249,19 @@ fn setup_input_stream(
     };
 
     let state_clone = state.clone();
+    let data_dir = state.data_dir.clone();
     std::thread::Builder::new()
         .name("voiceforge-dsp-loop".into())
         .spawn(move || {
-            run_processing_loop(state_clone, sample_rate, sample_rx, stop_rx);
+            log_to_file(&data_dir, "DSP processing loop started");
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_processing_loop(state_clone, sample_rate, sample_rx, stop_rx, asr_tx);
+            }));
+            if let Err(e) = res {
+                log_to_file(&data_dir, &format!("DSP processing loop panicked: {:?}", e));
+            } else {
+                log_to_file(&data_dir, "DSP processing loop exited normally");
+            }
         })
         .expect("Failed to spawn dsp processing thread");
 
@@ -235,12 +273,23 @@ fn run_processing_loop(
     native_sample_rate: u32,
     sample_rx: Receiver<Vec<f32>>,
     stop_rx: Receiver<()>,
+    asr_tx: Sender<AsrTask>,
 ) {
     let vad_path = state.model_dir.join("silero_vad.onnx");
     let mut vad = if vad_path.exists() {
         let vad_cfg = state.vad_config.lock().unwrap().clone();
-        VadDetector::new(&vad_path, &vad_cfg).ok()
+        match VadDetector::new(&vad_path, &vad_cfg) {
+            Ok(d) => {
+                log_to_file(&state.data_dir, "Silero VAD initialized successfully");
+                Some(d)
+            }
+            Err(e) => {
+                log_to_file(&state.data_dir, &format!("Failed to load Silero VAD from {:?}: {:?}", vad_path, e));
+                None
+            }
+        }
     } else {
+        log_to_file(&state.data_dir, &format!("Silero VAD not found at {:?}, using energy chunk fallback", vad_path));
         None
     };
 
@@ -310,8 +359,18 @@ fn run_processing_loop(
                     *state.mic_status.lock().unwrap() = MicStatus::Listening;
                     recording_start_time = None;
 
-                    // Filter fragments < 600ms
-                    if segment_samples.len() >= 9600 {
+                    log_to_file(
+                        &state.data_dir,
+                        &format!(
+                            "VAD popped segment: {} samples ({}ms), peak={:.1}dBFS",
+                            segment_samples.len(),
+                            duration_ms,
+                            peak_dbfs
+                        ),
+                    );
+
+                    // Filter fragments < 0.25s (4000 samples)
+                    if segment_samples.len() >= 4000 {
                         save_and_dispatch_utterance(
                             &state,
                             segment_samples,
@@ -321,6 +380,12 @@ fn run_processing_loop(
                             session_offset_start_ms,
                             session_offset_end_ms,
                             peak_dbfs,
+                            &asr_tx,
+                        );
+                    } else {
+                        log_to_file(
+                            &state.data_dir,
+                            &format!("Ignored short segment ({} samples < 4000)", segment_samples.len()),
                         );
                     }
                     speech_recording_buffer.clear();
@@ -341,6 +406,7 @@ fn run_processing_loop(
                         end_offset.saturating_sub(1500),
                         end_offset,
                         peak_dbfs,
+                        &asr_tx,
                     );
                 }
             }
@@ -357,13 +423,20 @@ fn save_and_dispatch_utterance(
     session_offset_start_ms: i64,
     session_offset_end_ms: i64,
     peak_dbfs: f32,
+    asr_tx: &Sender<AsrTask>,
 ) {
     let utt_id = format!("utt_{}", Utc::now().format("%Y%m%d_%H%M%S_%3f"));
     let session_id = state.current_session_id.lock().unwrap().clone();
     let wav_filename = format!("{}.wav", utt_id);
     let wav_path = state.data_dir.join("wavs").join(&wav_filename);
 
+    log_to_file(
+        &state.data_dir,
+        &format!("Writing utterance WAV: {} (duration: {}ms, file: {:?})", utt_id, duration_ms, wav_filename),
+    );
+
     if let Err(e) = write_wav_file(&wav_path, &samples, 16000) {
+        log_to_file(&state.data_dir, &format!("Failed to write WAV file {:?}: {:?}", wav_path, e));
         eprintln!("Failed to write WAV file {:?}: {:?}", wav_path, e);
         return;
     }
@@ -398,20 +471,26 @@ fn save_and_dispatch_utterance(
     };
 
     if let Err(e) = state.db.insert_utterance(&record) {
+        log_to_file(&state.data_dir, &format!("Failed to insert utterance into DB: {:?}", e));
         eprintln!("Failed to insert utterance into DB: {:?}", e);
         return;
     }
+
+    log_to_file(&state.data_dir, &format!("Successfully saved utterance {} to DB", utt_id));
 
     let current_mode = *state.capture_mode.lock().unwrap();
     if current_mode == CaptureMode::SilentDeferred {
         return;
     }
 
-    let state_clone = state.clone();
-    let samples_clone = samples.clone();
-    tokio::spawn(async move {
-        run_asr_for_utterance(&state_clone, &utt_id, &samples_clone, 16000);
-    });
+    // Safely enqueue ASR task to dedicated background worker (zero-panic guarantee)
+    if let Err(e) = asr_tx.send(AsrTask {
+        utt_id: utt_id.clone(),
+        samples,
+        sample_rate: 16000,
+    }) {
+        log_to_file(&state.data_dir, &format!("Failed to enqueue ASR task for {}: {:?}", utt_id, e));
+    }
 }
 
 pub fn run_asr_for_utterance(state: &AppState, utt_id: &str, samples: &[f32], sample_rate: i32) {
@@ -421,23 +500,39 @@ pub fn run_asr_for_utterance(state: &AppState, utt_id: &str, samples: &[f32], sa
         let model_path = state.model_dir.join("model.int8.onnx");
         let tokens_path = state.model_dir.join("tokens.txt");
         if model_path.exists() && tokens_path.exists() {
-            if let Ok(engine) = AsrEngine::new(&model_path, &tokens_path, None) {
-                *asr_guard = Some(engine);
+            log_to_file(&state.data_dir, &format!("Initializing ASR engine from {:?}", state.model_dir));
+            match AsrEngine::new(&model_path, &tokens_path, None) {
+                Ok(engine) => {
+                    log_to_file(&state.data_dir, "ASR engine initialized successfully");
+                    *asr_guard = Some(engine);
+                }
+                Err(e) => {
+                    log_to_file(&state.data_dir, &format!("Failed to initialize ASR engine: {:?}", e));
+                }
             }
+        } else {
+            log_to_file(&state.data_dir, &format!("Model files not found in {:?}, skipping ASR", state.model_dir));
         }
     }
 
     if let Some(ref engine) = *asr_guard {
-        if let Ok(res) = engine.transcribe(samples, sample_rate) {
-            let _ = state.db.update_utterance_asr(
-                utt_id,
-                &res.text,
-                &res.language,
-                res.emotion.as_deref(),
-                res.confidence,
-                engine.model_name(),
-                &res.words,
-            );
+        log_to_file(&state.data_dir, &format!("Running ASR transcription for {}...", utt_id));
+        match engine.transcribe(samples, sample_rate) {
+            Ok(res) => {
+                log_to_file(&state.data_dir, &format!("ASR completed for {}: [{}] {}", utt_id, res.language, res.text));
+                let _ = state.db.update_utterance_asr(
+                    utt_id,
+                    &res.text,
+                    &res.language,
+                    res.emotion.as_deref(),
+                    res.confidence,
+                    engine.model_name(),
+                    &res.words,
+                );
+            }
+            Err(e) => {
+                log_to_file(&state.data_dir, &format!("ASR transcription error for {}: {:?}", utt_id, e));
+            }
         }
     }
 }

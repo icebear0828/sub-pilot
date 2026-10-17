@@ -780,17 +780,35 @@
           banner.style.display = "none";
         }
 
+        // 实时自动刷新切片列表：当有新句子切片完成或转写结束时自动更新工作台
+        if (s.total_utterances !== undefined && s.total_utterances !== lastTotalUtterances) {
+          lastTotalUtterances = s.total_utterances;
+          loadUtterances();
+        } else if (s.pending_asr_count !== undefined && s.pending_asr_count !== lastPendingAsrCount) {
+          lastPendingAsrCount = s.pending_asr_count;
+          loadUtterances();
+        }
+
       } catch (err) {
         console.error("Poll status error:", err);
       }
     }
+    let lastTotalUtterances = -1;
+    let lastPendingAsrCount = -1;
     setInterval(pollStatus, 120);
 
     // ── 语料工作台 ──
     async function loadUtterances() {
       try {
+        const activeInput = document.activeElement;
+        const activeId = (activeInput && activeInput.classList.contains("card-text-input"))
+          ? activeInput.closest(".utterance-card")?.dataset.id
+          : null;
+        const selStart = activeInput ? activeInput.selectionStart : null;
+        const selEnd = activeInput ? activeInput.selectionEnd : null;
+
         utterances = await invoke("list_utterances", { sessionId: null, statusFilter: null });
-        renderList();
+        renderList(activeId, selStart, selEnd);
         updateStats();
       } catch (err) {
         console.error("Failed to load utterances:", err);
@@ -811,7 +829,7 @@
       document.getElementById("stat-verified").textContent = `${verified} / ${valid.length}`;
     }
 
-    function renderList() {
+    function renderList(preserveActiveId, selStart, selEnd) {
       const listEl = document.getElementById("utterance-list");
       listEl.innerHTML = "";
 
@@ -824,6 +842,7 @@
         const card = document.createElement("div");
         card.className = "utterance-card" + (u.verified ? " verified" : "");
         card.dataset.index = idx;
+        card.dataset.id = u.id;
 
         const durSec = (u.duration_ms / 1000).toFixed(1) + "s";
         card.innerHTML = `
@@ -881,6 +900,16 @@
 
         listEl.appendChild(card);
       });
+
+      if (preserveActiveId) {
+        const inputToFocus = listEl.querySelector(`.utterance-card[data-id="${preserveActiveId}"] .card-text-input`);
+        if (inputToFocus) {
+          inputToFocus.focus();
+          if (selStart !== null && selEnd !== null) {
+            try { inputToFocus.setSelectionRange(selStart, selEnd); } catch (_) {}
+          }
+        }
+      }
     }
 
     async function playAudio(filepath) {

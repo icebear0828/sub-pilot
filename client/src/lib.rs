@@ -349,6 +349,13 @@ pub fn run() {
     let data_dir = get_data_dir();
     let model_dir = find_model_dir(&data_dir);
 
+    let panic_log_dir = data_dir.clone();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let msg = format!("CRITICAL PANIC: {}", panic_info);
+        eprintln!("{}", msg);
+        log_to_file(&panic_log_dir, &msg);
+    }));
+
     log_to_file(&data_dir, "VoiceForge Mini App starting up");
     println!("📂 VoiceForge Mini Data Dir: {:?}", data_dir);
     println!("🤖 VoiceForge Mini Model Dir: {:?}", model_dir);

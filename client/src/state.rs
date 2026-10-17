@@ -46,6 +46,7 @@ pub struct AppStatusDto {
     pub peak_dbfs: f32,
     pub current_duration_s: f32,
     pub pending_asr_count: usize,
+    pub total_utterances: usize,
     pub error_message: Option<String>,
 }
 
@@ -103,6 +104,7 @@ impl AppState {
         let peak_dbfs = *self.current_peak_dbfs.lock().unwrap();
         let current_duration_s = *self.current_recording_duration_s.lock().unwrap();
         let pending_asr_count = self.db.get_pending_asr_ids(Some(&session_id)).unwrap_or_default().len();
+        let total_utterances = self.db.get_total_utterances_count(Some(&session_id)).unwrap_or_default();
         let error_message = self.last_error.lock().unwrap().clone();
 
         let model_ready = self.model_dir.join("silero_vad.onnx").exists()
@@ -120,6 +122,7 @@ impl AppState {
             peak_dbfs,
             current_duration_s,
             pending_asr_count,
+            total_utterances,
             error_message,
         }
     }

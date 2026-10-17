@@ -404,4 +404,22 @@ impl Database {
         }
         Ok(list)
     }
+
+    pub fn get_total_utterances_count(&self, session_id: Option<&str>) -> Result<usize> {
+        let conn = self.connect()?;
+        let count: i64 = if let Some(sid) = session_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM utterances WHERE session_id = ?1 AND status != 'Rejected'",
+                params![sid],
+                |r| r.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM utterances WHERE status != 'Rejected'",
+                [],
+                |r| r.get(0),
+            )?
+        };
+        Ok(count as usize)
+    }
 }
